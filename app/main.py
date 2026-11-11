@@ -11,7 +11,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 import wakeonlan
 
-app = FastAPI(title="AGY Mobile Gateway", version="2.0.0")
+app = FastAPI(title="AGY Mobile Gateway", version="2.1.0")
 
 TARGET_HOST = os.getenv("TARGET_HOST", "192.168.1.190")
 TARGET_USER = os.getenv("TARGET_USER", "ai")
@@ -24,7 +24,6 @@ HISTORY_FILE = os.path.join(DATA_DIR, "history.json")
 if os.path.exists(STATIC_DIR):
     app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
-# Models catalog
 DEFAULT_AGY_MODELS = [
     {"id": "gemini-3.8-flash-high", "name": "Gemini 3.8 Flash (High)", "type": "cloud", "badge": "Rápido"},
     {"id": "gemini-4-argon-high", "name": "Gemini 4 Argon (High)", "type": "cloud", "badge": "Raciocínio"},
@@ -68,7 +67,6 @@ def append_to_history(conv_id: str, prompt: str, response: str, model: str):
     now = datetime.now().isoformat()
     
     if conv_id not in convs:
-        # First turn: derive title from first prompt
         title = prompt[:48].replace("\n", " ").strip()
         if len(prompt) > 48:
             title += "..."
@@ -120,7 +118,6 @@ async def trigger_wol(req: Optional[WolRequest] = None):
 @app.get("/api/models")
 async def get_models():
     models = list(DEFAULT_AGY_MODELS)
-    # Check if target is online and probe Ollama models via SSH
     is_online = await asyncio.to_thread(check_target_online, TARGET_HOST, 22, 1.0)
     if is_online:
         try:
@@ -227,7 +224,14 @@ async def chat_stream(req: ChatRequest):
             try:
                 proc = await asyncio.create_subprocess_exec(*cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
                 while True:
-                    line = await proc.stdout.readline()
+                    try:
+                        line = await asyncio.wait_for(proc.stdout.readline(), timeout=8.0)
+                    except asyncio.TimeoutError:
+                        if proc.returncode is not None:
+                            break
+                        yield ": ping\n\n"
+                        continue
+
                     if not line:
                         break
                     line_str = line.decode("utf-8", errors="replace").strip()
@@ -276,7 +280,15 @@ async def chat_stream(req: ChatRequest):
 
             try:
                 while True:
-                    line = await proc.stdout.readline()
+                    # 8-second heartbeat timeout prevents mobile browsers from dropping the SSE connection
+                    try:
+                        line = await asyncio.wait_for(proc.stdout.readline(), timeout=8.0)
+                    except asyncio.TimeoutError:
+                        if proc.returncode is not None:
+                            break
+                        yield ": ping\n\n"
+                        continue
+
                     if not line:
                         break
                     line_str = line.decode("utf-8", errors="replace").strip()
@@ -315,8 +327,8 @@ async def chat_stream(req: ChatRequest):
                     yield f"data: {json.dumps({'type': 'error', 'error': err_msg or f'Processo saiu com código {proc.returncode}'})}\n\n"
 
             except asyncio.CancelledError:
-                proc.terminate()
-                raise
+                # Do not immediately terminate if task is still running: read remaining in background
+                pass
             except Exception as e:
                 yield f"data: {json.dumps({'type': 'error', 'error': str(e)})}\n\n"
 
