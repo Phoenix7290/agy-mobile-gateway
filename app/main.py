@@ -11,7 +11,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 import wakeonlan
 
-app = FastAPI(title="AGY Mobile Gateway", version="2.1.0")
+app = FastAPI(title="AGY Mobile Gateway", version="2.2.0")
 
 TARGET_HOST = os.getenv("TARGET_HOST", "192.168.1.190")
 TARGET_USER = os.getenv("TARGET_USER", "ai")
@@ -47,7 +47,7 @@ def check_target_online(host: str, port: int = 22, timeout: float = 1.5) -> bool
     except (socket.timeout, ConnectionRefusedError, OSError):
         return False
 
-def load_history_data() -> Dict[str, Any]:
+def load_local_history() -> Dict[str, Any]:
     if not os.path.exists(HISTORY_FILE):
         return {"conversations": {}}
     try:
@@ -56,37 +56,28 @@ def load_history_data() -> Dict[str, Any]:
     except Exception:
         return {"conversations": {}}
 
-def save_history_data(data: Dict[str, Any]):
+def save_local_history(data: Dict[str, Any]):
     os.makedirs(os.path.dirname(HISTORY_FILE), exist_ok=True)
     with open(HISTORY_FILE, "w", encoding="utf-8") as f:
         json.dump(data, f, ensure_ascii=False, indent=2)
 
-def append_to_history(conv_id: str, prompt: str, response: str, model: str):
-    data = load_history_data()
-    convs = data.setdefault("conversations", {})
-    now = datetime.now().isoformat()
-    
-    if conv_id not in convs:
-        title = prompt[:48].replace("\n", " ").strip()
-        if len(prompt) > 48:
-            title += "..."
-        convs[conv_id] = {
-            "id": conv_id,
-            "title": title or "Nova Conversa",
-            "model": model,
-            "created_at": now,
-            "updated_at": now,
-            "messages": []
-        }
-    
-    conv = convs[conv_id]
-    conv["updated_at"] = now
-    conv["model"] = model
-    conv["messages"].append({"role": "user", "content": prompt, "timestamp": now})
-    if response:
-        conv["messages"].append({"role": "agent", "content": response, "timestamp": now})
-    
-    save_history_data(data)
+async def run_ssh_command(cmd_str: str, timeout: float = 5.0) -> Optional[str]:
+    ssh_cmd = [
+        "ssh", "-i", SSH_KEY, "-o", "StrictHostKeyChecking=accept-new",
+        "-o", "BatchMode=yes", "-o", f"ConnectTimeout={int(timeout)}",
+        f"{TARGET_USER}@{TARGET_HOST}",
+        cmd_str
+    ]
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            *ssh_cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
+        )
+        stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=timeout)
+        if proc.returncode == 0:
+            return stdout.decode("utf-8", errors="replace")
+    except Exception:
+        pass
+    return None
 
 @app.get("/", response_class=HTMLResponse)
 async def serve_index():
@@ -120,17 +111,10 @@ async def get_models():
     models = list(DEFAULT_AGY_MODELS)
     is_online = await asyncio.to_thread(check_target_online, TARGET_HOST, 22, 1.0)
     if is_online:
-        try:
-            cmd = [
-                "ssh", "-i", SSH_KEY, "-o", "StrictHostKeyChecking=accept-new",
-                "-o", "BatchMode=yes", "-o", "ConnectTimeout=2",
-                f"{TARGET_USER}@{TARGET_HOST}",
-                "curl -s --max-time 2 http://127.0.0.1:11434/api/tags"
-            ]
-            proc = await asyncio.create_subprocess_exec(*cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
-            stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=3.0)
-            if proc.returncode == 0 and stdout:
-                tags_data = json.loads(stdout.decode())
+        stdout = await run_ssh_command("curl -s --max-time 2 http://127.0.0.1:11434/api/tags", timeout=3.0)
+        if stdout:
+            try:
+                tags_data = json.loads(stdout)
                 for m in tags_data.get("models", []):
                     m_name = m.get("name")
                     if m_name and not m_name.startswith("nomic"):
@@ -140,14 +124,27 @@ async def get_models():
                             "type": "local",
                             "badge": "Ollama / GPU"
                         })
-        except Exception:
-            pass
+            except Exception:
+                pass
     return {"models": models}
 
 @app.get("/api/conversations")
 async def list_conversations():
-    data = load_history_data()
-    convs = list(data.get("conversations", {}).values())
+    is_online = await asyncio.to_thread(check_target_online, TARGET_HOST, 22, 1.5)
+    if is_online:
+        # Single Source of Truth: query CachyCore directly for complete sync
+        stdout = await run_ssh_command("python3 /home/ai/bin/agy-gateway-sync.py list 30", timeout=4.0)
+        if stdout:
+            try:
+                data = json.loads(stdout)
+                if "conversations" in data:
+                    return data
+            except Exception:
+                pass
+
+    # Fallback to local cache
+    local = load_local_history()
+    convs = list(local.get("conversations", {}).values())
     convs.sort(key=lambda c: c.get("updated_at", ""), reverse=True)
     return {
         "conversations": [
@@ -165,21 +162,32 @@ async def list_conversations():
 
 @app.get("/api/conversations/{conv_id}")
 async def get_conversation(conv_id: str):
-    data = load_history_data()
-    conv = data.get("conversations", {}).get(conv_id)
+    is_online = await asyncio.to_thread(check_target_online, TARGET_HOST, 22, 1.5)
+    if is_online:
+        stdout = await run_ssh_command(f"python3 /home/ai/bin/agy-gateway-sync.py get {shlex.quote(conv_id)}", timeout=5.0)
+        if stdout:
+            try:
+                data = json.loads(stdout)
+                if "messages" in data:
+                    return data
+            except Exception:
+                pass
+
+    # Fallback to local cache
+    local = load_local_history()
+    conv = local.get("conversations", {}).get(conv_id)
     if not conv:
         raise HTTPException(status_code=404, detail="Conversa não encontrada")
     return conv
 
 @app.delete("/api/conversations/{conv_id}")
 async def delete_conversation(conv_id: str):
-    data = load_history_data()
-    convs = data.get("conversations", {})
+    local = load_local_history()
+    convs = local.get("conversations", {})
     if conv_id in convs:
         del convs[conv_id]
-        save_history_data(data)
-        return {"ok": True}
-    raise HTTPException(status_code=404, detail="Conversa não encontrada")
+        save_local_history(local)
+    return {"ok": True}
 
 @app.post("/api/chat")
 async def chat_stream(req: ChatRequest):
@@ -199,14 +207,15 @@ async def chat_stream(req: ChatRequest):
             yield "data: [DONE]\n\n"
             return
 
-        current_conv_id = req.conversation_id or f"conv-{int(datetime.now().timestamp())}"
+        current_conv_id = req.conversation_id or None
         accumulated_text = ""
         emitted_any = False
 
         # Mode A: Local Ollama Model
         if selected_model.startswith("ollama:"):
             ollama_model = selected_model.replace("ollama:", "")
-            yield f"data: {json.dumps({'type': 'init', 'conversation_id': current_conv_id, 'model': selected_model})}\n\n"
+            conv_label = current_conv_id or f"conv-{int(datetime.now().timestamp())}"
+            yield f"data: {json.dumps({'type': 'init', 'conversation_id': conv_label, 'model': selected_model})}\n\n"
             
             payload_json = json.dumps({
                 "model": ollama_model,
@@ -249,7 +258,7 @@ async def chat_stream(req: ChatRequest):
                     except json.JSONDecodeError:
                         continue
                 await proc.wait()
-                yield f"data: {json.dumps({'type': 'done', 'conversation_id': current_conv_id, 'status': 'SUCCESS'})}\n\n"
+                yield f"data: {json.dumps({'type': 'done', 'conversation_id': conv_label, 'status': 'SUCCESS'})}\n\n"
             except Exception as e:
                 yield f"data: {json.dumps({'type': 'error', 'error': str(e)})}\n\n"
 
@@ -280,7 +289,6 @@ async def chat_stream(req: ChatRequest):
 
             try:
                 while True:
-                    # 8-second heartbeat timeout prevents mobile browsers from dropping the SSE connection
                     try:
                         line = await asyncio.wait_for(proc.stdout.readline(), timeout=8.0)
                     except asyncio.TimeoutError:
@@ -304,17 +312,26 @@ async def chat_stream(req: ChatRequest):
                     if event_type == "init":
                         current_conv_id = data.get("conversation_id", current_conv_id)
                         yield f"data: {json.dumps({'type': 'init', 'conversation_id': current_conv_id, 'model': selected_model})}\n\n"
+                    
                     elif event_type == "step_update":
                         step = data.get("step_update", {})
-                        delta = step.get("text_delta")
-                        if delta:
-                            emitted_any = True
-                            accumulated_text += delta
-                            yield f"data: {json.dumps({'type': 'delta', 'text': delta})}\n\n"
-                        tool_calls = step.get("tool_calls")
-                        if tool_calls and isinstance(tool_calls, list):
-                            tools = [t.get("name") for t in tool_calls if isinstance(t, dict)]
-                            yield f"data: {json.dumps({'type': 'tool', 'tools': tools})}\n\n"
+                        step_type = step.get("step_type")
+                        
+                        # Live tool updates!
+                        if step_type == "tool":
+                            tool_name = step.get("tool_name", "tool")
+                            tool_state = step.get("state", "ACTIVE")
+                            params = step.get("tool_info", {}).get("parameters", {})
+                            cmd_preview = params.get("CommandLine", "") or params.get("Path", "") or params.get("query", "")
+                            yield f"data: {json.dumps({'type': 'tool', 'name': tool_name, 'state': tool_state, 'preview': str(cmd_preview)[:80]})}\n\n"
+                        
+                        elif step_type == "agent_response":
+                            delta = step.get("text_delta")
+                            if delta:
+                                emitted_any = True
+                                accumulated_text += delta
+                                yield f"data: {json.dumps({'type': 'delta', 'text': delta})}\n\n"
+
                     elif event_type == "result":
                         res = data.get("result", {})
                         conv = res.get("conversation_id", current_conv_id)
@@ -327,17 +344,9 @@ async def chat_stream(req: ChatRequest):
                     yield f"data: {json.dumps({'type': 'error', 'error': err_msg or f'Processo saiu com código {proc.returncode}'})}\n\n"
 
             except asyncio.CancelledError:
-                # Do not immediately terminate if task is still running: read remaining in background
                 pass
             except Exception as e:
                 yield f"data: {json.dumps({'type': 'error', 'error': str(e)})}\n\n"
-
-        # Persist conversation turn into history
-        if emitted_any and accumulated_text:
-            try:
-                append_to_history(current_conv_id, req.prompt, accumulated_text, selected_model)
-            except Exception:
-                pass
 
         yield "data: [DONE]\n\n"
 

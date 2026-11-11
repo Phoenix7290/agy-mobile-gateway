@@ -111,7 +111,7 @@
   <div id="terminal-modal" class="fixed inset-0 bg-zinc-950 z-50 flex flex-col hidden">
     <div class="bg-zinc-900 px-4 py-2.5 border-b border-zinc-800 flex items-center justify-between shrink-0">
       <div class="flex items-center space-x-2">
-        <div class="w-2.5 h-2.5 rounded-full bg-emerald-500"></div>
+        <div class="w-2.5 h-2.5 rounded-full bg-emerald-500 animate-pulse"></div>
         <span class="text-xs font-mono font-bold text-zinc-200">Terminal ryanslx@CachyCore (Sudo / HITL)</span>
       </div>
       <div class="flex items-center space-x-2">
@@ -152,7 +152,7 @@
 
     <!-- Conversations List -->
     <div id="conversations-list" class="flex-1 overflow-y-auto p-2 space-y-1.5">
-      <div class="text-center py-8 text-xs text-zinc-500">Carregando histórico...</div>
+      <div class="text-center py-8 text-xs text-zinc-500">Sincronizando sessões do PC...</div>
     </div>
   </aside>
 
@@ -164,6 +164,15 @@
       <p class="text-xs text-zinc-400 mt-1 max-w-xs">Controle total do CachyCore via WireGuard. Suporta modelos em nuvem, Ollama local e terminal HITL integrado.</p>
     </div>
   </main>
+
+  <!-- Live Status Bar (Visible while agent is working) -->
+  <div id="live-status-bar" class="hidden px-3 py-1.5 bg-zinc-900 border-t border-zinc-800 flex items-center justify-between text-xs font-mono text-zinc-300 shrink-0">
+    <div class="flex items-center space-x-2 truncate">
+      <span class="w-2 h-2 rounded-full bg-brand-500 animate-ping shrink-0"></span>
+      <span id="live-status-text" class="truncate text-brand-300">Conectando...</span>
+    </div>
+    <span id="live-status-timer" class="text-[10px] text-zinc-500 ml-2 shrink-0">0s</span>
+  </div>
 
   <!-- Quick Action Chips -->
   <div class="px-3 py-1.5 bg-zinc-950/80 border-t border-zinc-800/40 flex items-center space-x-2 overflow-x-auto no-scrollbar shrink-0">
@@ -203,6 +212,8 @@
     let isListening = false;
     let drawerOpen = false;
     let terminalOpen = false;
+    let liveTimerInterval = null;
+    let liveSeconds = 0;
 
     const chatContainer = document.getElementById('chat-container');
     const emptyState = document.getElementById('empty-state');
@@ -219,6 +230,9 @@
     const conversationsList = document.getElementById('conversations-list');
     const terminalModal = document.getElementById('terminal-modal');
     const terminalFrame = document.getElementById('terminal-frame');
+    const liveStatusBar = document.getElementById('live-status-bar');
+    const liveStatusText = document.getElementById('live-status-text');
+    const liveStatusTimer = document.getElementById('live-status-timer');
 
     // Terminal Management
     function toggleTerminal() {
@@ -259,7 +273,7 @@
         conversationsList.innerHTML = '';
         
         if (!data.conversations || data.conversations.length === 0) {
-          conversationsList.innerHTML = '<div class="text-center py-8 text-xs text-zinc-500">Nenhuma conversa salva ainda.</div>';
+          conversationsList.innerHTML = '<div class="text-center py-8 text-xs text-zinc-500">Nenhuma conversa encontrada.</div>';
           return;
         }
 
@@ -280,7 +294,8 @@
 
           const meta = document.createElement('p');
           meta.className = 'text-[10px] text-zinc-500 mt-0.5 flex items-center gap-1.5';
-          meta.innerHTML = `<span>${conv.model.split(':')[0]}</span> • <span>${new Date(conv.updated_at).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'})}</span>`;
+          const timeStr = conv.updated_at ? new Date(conv.updated_at).toLocaleDateString([], {day:'2-digit', month:'2-digit'}) + ' ' + new Date(conv.updated_at).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'}) : '';
+          meta.innerHTML = `<span>${conv.message_count || 0} msgs</span> • <span>${timeStr}</span>`;
 
           info.appendChild(title);
           info.appendChild(meta);
@@ -295,7 +310,7 @@
           conversationsList.appendChild(item);
         });
       } catch (err) {
-        conversationsList.innerHTML = '<div class="text-center py-4 text-xs text-rose-400">Erro ao carregar conversas</div>';
+        conversationsList.innerHTML = '<div class="text-center py-4 text-xs text-rose-400">Erro ao carregar sessões</div>';
       }
     }
 
@@ -493,6 +508,26 @@
       return bubble;
     }
 
+    function startLiveStatus() {
+      liveSeconds = 0;
+      liveStatusBar.classList.remove('hidden');
+      liveStatusText.textContent = 'Processando instrução...';
+      liveStatusTimer.textContent = '0s';
+      if (liveTimerInterval) clearInterval(liveTimerInterval);
+      liveTimerInterval = setInterval(() => {
+        liveSeconds++;
+        liveStatusTimer.textContent = `${liveSeconds}s`;
+      }, 1000);
+    }
+
+    function stopLiveStatus() {
+      if (liveTimerInterval) {
+        clearInterval(liveTimerInterval);
+        liveTimerInterval = null;
+      }
+      liveStatusBar.classList.add('hidden');
+    }
+
     async function handleSubmit(e) {
       e.preventDefault();
       const text = userInput.value.trim();
@@ -512,8 +547,9 @@
       const agentBubble = appendMessage('agent', '');
       agentBubble.classList.add('typing-cursor');
 
+      startLiveStatus();
+
       let accumulatedText = '';
-      let toolPill = null;
 
       try {
         const response = await fetch('/api/chat', {
@@ -557,23 +593,22 @@
               } else if (event.type === 'delta') {
                 accumulatedText += event.text;
                 agentBubble.innerHTML = marked.parse(accumulatedText);
+                liveStatusText.textContent = '✍️ Digitando resposta...';
                 scrollToBottom();
               } else if (event.type === 'tool') {
-                if (!toolPill) {
-                  toolPill = document.createElement('div');
-                  toolPill.className = 'text-[11px] font-mono text-amber-400 bg-amber-950/40 border border-amber-800/40 rounded px-2 py-0.5 mt-2 mb-1 inline-flex items-center gap-1.5 animate-pulse';
-                  agentBubble.parentNode.insertBefore(toolPill, agentBubble.nextSibling);
+                // Live Tool Execution updates!
+                const toolName = event.name || 'ferramenta';
+                const preview = event.preview ? ` (${event.preview.slice(0, 32)}...)` : '';
+                if (event.state === 'ACTIVE') {
+                  liveStatusText.textContent = `⚡ Executando: ${toolName}${preview}`;
+                } else {
+                  liveStatusText.textContent = `✓ Concluído: ${toolName}`;
                 }
-                toolPill.innerHTML = `<span>⚡</span><span>Executando: <b>${event.tools.join(', ')}</b>...</span>`;
                 scrollToBottom();
               } else if (event.type === 'done') {
                 if (event.conversation_id) {
                   currentConversationId = event.conversation_id;
                   localStorage.setItem('agy_conv_id', currentConversationId);
-                }
-                if (toolPill) {
-                  toolPill.remove();
-                  toolPill = null;
                 }
               } else if (event.type === 'error') {
                 accumulatedText += `\n\n> ⚠️ **Erro:** ${event.error}`;
@@ -584,12 +619,12 @@
         }
       } catch (err) {
         if (!accumulatedText) {
-          accumulatedText = `> ⚠️ **Conexão pausada:** A tarefa pode estar demorando ou a tela do celular apagou. O agente continua trabalhando em segundo plano no CachyCore.\n\nRecarregue a página ou acesse o **Histórico** para ver a resposta final.`;
+          accumulatedText = `> ⚠️ **Conexão pausada:** A tarefa é extensa e continua rodando no CachyCore.\n\nRecarregue a página ou acesse o **Histórico de Sessões** para ver o resultado completo.`;
         }
       } finally {
+        stopLiveStatus();
         agentBubble.classList.remove('typing-cursor');
         agentBubble.innerHTML = marked.parse(accumulatedText || '*(Sem resposta)*');
-        if (toolPill) toolPill.remove();
         isGenerating = false;
         btnSend.disabled = false;
         sendIcon.classList.remove('hidden');
