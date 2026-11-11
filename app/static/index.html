@@ -1,0 +1,551 @@
+<!DOCTYPE html>
+<html lang="pt-BR" class="dark h-full">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+  <meta name="theme-color" content="#09090b">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="apple-mobile-web-app-title" content="AGY">
+  <link rel="manifest" href="/static/manifest.json">
+  <link rel="icon" type="image/svg+xml" href="/static/icon.svg">
+  <link rel="apple-touch-icon" href="/static/apple-touch-icon.png">
+  <title>AGY Mobile Gateway</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+  <script>
+    tailwind.config = {
+      darkMode: 'class',
+      theme: {
+        extend: {
+          colors: {
+            brand: { 500: '#6366f1', 600: '#4f46e5', 700: '#4338ca' }
+          }
+        }
+      }
+    }
+  </script>
+  <style>
+    body {
+      padding-top: env(safe-area-inset-top);
+      padding-bottom: env(safe-area-inset-bottom);
+    }
+    .markdown-body pre {
+      background-color: #18181b;
+      border-radius: 0.5rem;
+      padding: 0.75rem;
+      overflow-x: auto;
+      font-size: 0.825rem;
+      margin-top: 0.5rem;
+      margin-bottom: 0.5rem;
+      border: 1px solid #27272a;
+      position: relative;
+    }
+    .markdown-body code {
+      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+    }
+    .markdown-body p { margin-bottom: 0.5rem; }
+    .markdown-body ul, .markdown-body ol { margin-left: 1.25rem; margin-bottom: 0.5rem; list-style-type: disc; }
+    .markdown-body table { width: 100%; border-collapse: collapse; margin-bottom: 0.5rem; }
+    .markdown-body th, .markdown-body td { border: 1px solid #27272a; padding: 0.4rem 0.6rem; font-size: 0.8rem; }
+    .markdown-body th { background-color: #18181b; }
+    .typing-cursor::after {
+      content: '▍';
+      display: inline-block;
+      animation: blink 1s step-end infinite;
+      color: #818cf8;
+      margin-left: 2px;
+    }
+    @keyframes blink { 0%, 100% { opacity: 1; } 50% { opacity: 0; } }
+  </style>
+</head>
+<body class="bg-zinc-950 text-zinc-100 flex flex-col h-full overflow-hidden select-none font-sans">
+
+  <!-- Top Navigation Header -->
+  <header class="bg-zinc-900/95 backdrop-blur border-b border-zinc-800 px-3 py-2.5 flex items-center justify-between shrink-0 z-30">
+    <div class="flex items-center space-x-2">
+      <!-- Drawer Toggle Button -->
+      <button onclick="toggleDrawer()" title="Histórico de Conversas" class="p-2 rounded-xl bg-zinc-800 text-zinc-300 hover:text-white border border-zinc-700/60 active:scale-95 transition-all">
+        <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6h16M4 12h16M4 18h16"/></svg>
+      </button>
+
+      <div class="flex items-center space-x-2">
+        <img src="/static/icon.svg" class="w-6 h-6 rounded-md shadow-sm" alt="AGY Icon">
+        <div class="flex flex-col">
+          <div class="flex items-center space-x-1.5">
+            <span class="text-xs font-bold tracking-wide text-zinc-100">AGY Gateway</span>
+            <span id="status-dot" class="w-2 h-2 rounded-full bg-amber-500 animate-pulse"></span>
+          </div>
+          <!-- Model Selector Dropdown -->
+          <select id="model-select" onchange="changeModel(this.value)" class="bg-transparent text-[11px] font-mono text-zinc-400 focus:outline-none focus:text-brand-400 cursor-pointer -ml-0.5">
+            <option value="gemini-3.8-flash-high" class="bg-zinc-900 text-zinc-100">Gemini 3.8 Flash (High)</option>
+            <option value="gemini-4-argon-high" class="bg-zinc-900 text-zinc-100">Gemini 4 Argon (High)</option>
+            <option value="claude-sonnet-5-5-high" class="bg-zinc-900 text-zinc-100">Claude Sonnet 5.5 (High)</option>
+            <option value="gpt-oss-120b-medium" class="bg-zinc-900 text-zinc-100">GPT-OSS 120B (Medium)</option>
+          </select>
+        </div>
+      </div>
+    </div>
+
+    <!-- Header Actions -->
+    <div class="flex items-center space-x-1.5">
+      <!-- WoL Button (Conditional) -->
+      <button id="btn-wol" onclick="triggerWol()" class="hidden text-[11px] font-medium px-2 py-1 rounded-lg bg-emerald-600/20 text-emerald-400 border border-emerald-500/30 hover:bg-emerald-600/30 active:scale-95 transition-all flex items-center gap-1">
+        <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z"/></svg>
+        <span>WoL</span>
+      </button>
+
+      <!-- New Chat Button -->
+      <button onclick="newConversation()" title="Nova Conversa" class="p-2 rounded-xl bg-brand-600/20 text-brand-400 hover:bg-brand-600/30 border border-brand-500/30 active:scale-95 transition-all">
+        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4"/></svg>
+      </button>
+    </div>
+  </header>
+
+  <!-- History Drawer (Slide-Over) -->
+  <div id="drawer-backdrop" onclick="toggleDrawer()" class="fixed inset-0 bg-black/60 backdrop-blur-sm z-40 hidden transition-opacity opacity-0"></div>
+  
+  <aside id="history-drawer" class="fixed inset-y-0 left-0 w-80 max-w-[85%] bg-zinc-900 border-r border-zinc-800 z-50 transform -translate-x-full transition-transform duration-300 ease-in-out flex flex-col shadow-2xl">
+    <div class="p-4 border-b border-zinc-800 flex items-center justify-between">
+      <div class="flex items-center space-x-2">
+        <svg class="w-5 h-5 text-brand-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
+        <h2 class="text-sm font-bold text-zinc-100">Histórico de Sessões</h2>
+      </div>
+      <button onclick="toggleDrawer()" class="p-1 rounded-lg text-zinc-400 hover:text-zinc-200">
+        <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/></svg>
+      </button>
+    </div>
+
+    <!-- New Chat in Drawer -->
+    <div class="p-3 border-b border-zinc-800/60">
+      <button onclick="newConversation(); toggleDrawer();" class="w-full py-2 px-3 rounded-xl bg-brand-600 hover:bg-brand-500 text-white text-xs font-semibold flex items-center justify-center space-x-1.5 shadow-sm active:scale-95 transition-all">
+        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4"/></svg>
+        <span>Criar Nova Conversa</span>
+      </button>
+    </div>
+
+    <!-- Conversations List -->
+    <div id="conversations-list" class="flex-1 overflow-y-auto p-2 space-y-1.5">
+      <div class="text-center py-8 text-xs text-zinc-500">Carregando histórico...</div>
+    </div>
+  </aside>
+
+  <!-- Messages Scroll Area -->
+  <main id="chat-container" class="flex-1 overflow-y-auto px-3 py-4 space-y-4 overscroll-contain">
+    <div id="empty-state" class="flex flex-col items-center justify-center h-full text-center px-4 py-8 text-zinc-500">
+      <img src="/static/icon.svg" class="w-16 h-16 rounded-2xl mb-3 shadow-lg" alt="Logo">
+      <p class="text-sm font-semibold text-zinc-200">Antigravity Mobile Gateway</p>
+      <p class="text-xs text-zinc-400 mt-1 max-w-xs">Controle total do CachyCore via WireGuard. Suporta modelos em nuvem e Ollama local.</p>
+    </div>
+  </main>
+
+  <!-- Quick Action Chips -->
+  <div class="px-3 py-1.5 bg-zinc-950/80 border-t border-zinc-800/40 flex items-center space-x-2 overflow-x-auto no-scrollbar shrink-0">
+    <button onclick="sendQuick('Qual o status atual do host CachyCore, recursos e uptime?')" class="text-[11px] whitespace-nowrap bg-zinc-900 hover:bg-zinc-800 text-zinc-300 border border-zinc-800 px-2.5 py-1 rounded-full active:scale-95 transition-all">🖥️ Status Host</button>
+    <button onclick="sendQuick('docker ps')" class="text-[11px] whitespace-nowrap bg-zinc-900 hover:bg-zinc-800 text-zinc-300 border border-zinc-800 px-2.5 py-1 rounded-full active:scale-95 transition-all">🐳 Docker PS</button>
+    <button onclick="sendQuick('git status')" class="text-[11px] whitespace-nowrap bg-zinc-900 hover:bg-zinc-800 text-zinc-300 border border-zinc-800 px-2.5 py-1 rounded-full active:scale-95 transition-all">🌿 Git Status</button>
+    <button onclick="sendQuick('Verifique o uso de VRAM e modelos do Ollama via resource-saver status')" class="text-[11px] whitespace-nowrap bg-zinc-900 hover:bg-zinc-800 text-zinc-300 border border-zinc-800 px-2.5 py-1 rounded-full active:scale-95 transition-all">⚡ VRAM / Ollama</button>
+  </div>
+
+  <!-- Bottom Input Bar -->
+  <footer class="bg-zinc-900/90 backdrop-blur border-t border-zinc-800 p-2.5 shrink-0 z-20">
+    <form id="chat-form" onsubmit="handleSubmit(event)" class="flex items-end gap-2 max-w-4xl mx-auto">
+      
+      <!-- Voice Dictation Button -->
+      <button type="button" id="btn-mic" onclick="toggleSpeech()" title="Ditado por Voz" class="p-2.5 rounded-xl bg-zinc-800 text-zinc-300 hover:text-white border border-zinc-700/60 active:scale-95 transition-all shrink-0">
+        <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 11a7 7 0 01-7 7m0 0a7 7 0 01-7-7m7 7v4m0 0H8m4 0h4m-4-8a3 3 0 01-3-3V5a3 3 0 116 0v6a3 3 0 01-3 3z"/></svg>
+      </button>
+
+      <!-- Auto-growing Textarea -->
+      <div class="flex-1 bg-zinc-950 border border-zinc-800 focus-within:border-brand-500 rounded-xl px-3 py-2 transition-all">
+        <textarea id="user-input" rows="1" placeholder="Mensagem para AGY..." class="w-full bg-transparent text-sm text-zinc-100 placeholder-zinc-500 focus:outline-none resize-none max-h-32 leading-relaxed" oninput="autoResize(this)" onkeydown="handleKeyDown(event)"></textarea>
+      </div>
+
+      <!-- Send Button -->
+      <button type="submit" id="btn-send" class="p-2.5 rounded-xl bg-brand-600 hover:bg-brand-500 text-white font-medium active:scale-95 transition-all shrink-0 disabled:opacity-40 disabled:pointer-events-none">
+        <svg id="send-icon" class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 12h14M12 5l7 7-7 7"/></svg>
+        <svg id="spin-icon" class="w-5 h-5 animate-spin hidden" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8H4z"></path></svg>
+      </button>
+    </form>
+  </footer>
+
+  <script>
+    let currentConversationId = localStorage.getItem('agy_conv_id') || null;
+    let selectedModel = localStorage.getItem('agy_model') || 'gemini-3.8-flash-high';
+    let isGenerating = false;
+    let recognition = null;
+    let isListening = false;
+    let drawerOpen = false;
+
+    const chatContainer = document.getElementById('chat-container');
+    const emptyState = document.getElementById('empty-state');
+    const userInput = document.getElementById('user-input');
+    const btnSend = document.getElementById('btn-send');
+    const sendIcon = document.getElementById('send-icon');
+    const spinIcon = document.getElementById('spin-icon');
+    const statusDot = document.getElementById('status-dot');
+    const btnWol = document.getElementById('btn-wol');
+    const btnMic = document.getElementById('btn-mic');
+    const modelSelect = document.getElementById('model-select');
+    const historyDrawer = document.getElementById('history-drawer');
+    const drawerBackdrop = document.getElementById('drawer-backdrop');
+    const conversationsList = document.getElementById('conversations-list');
+
+    // Drawer Management
+    function toggleDrawer() {
+      drawerOpen = !drawerOpen;
+      if (drawerOpen) {
+        historyDrawer.classList.remove('-translate-x-full');
+        drawerBackdrop.classList.remove('hidden');
+        setTimeout(() => drawerBackdrop.classList.remove('opacity-0'), 10);
+        loadConversations();
+      } else {
+        historyDrawer.classList.add('-translate-x-full');
+        drawerBackdrop.classList.add('opacity-0');
+        setTimeout(() => drawerBackdrop.classList.add('hidden'), 300);
+      }
+    }
+
+    async function loadConversations() {
+      try {
+        const res = await fetch('/api/conversations');
+        const data = await res.json();
+        conversationsList.innerHTML = '';
+        
+        if (!data.conversations || data.conversations.length === 0) {
+          conversationsList.innerHTML = '<div class="text-center py-8 text-xs text-zinc-500">Nenhuma conversa salva ainda.</div>';
+          return;
+        }
+
+        data.conversations.forEach(conv => {
+          const item = document.createElement('div');
+          const isCurrent = conv.id === currentConversationId;
+          item.className = `p-2.5 rounded-xl border flex items-center justify-between gap-2 cursor-pointer transition-all ${
+            isCurrent ? 'bg-brand-600/15 border-brand-500/40' : 'bg-zinc-800/40 border-zinc-800 hover:bg-zinc-800/80'
+          }`;
+
+          const info = document.createElement('div');
+          info.className = 'flex-1 min-w-0';
+          info.onclick = () => { selectConversation(conv.id); toggleDrawer(); };
+
+          const title = document.createElement('p');
+          title.className = `text-xs font-medium truncate ${isCurrent ? 'text-brand-300' : 'text-zinc-200'}`;
+          title.textContent = conv.title || 'Sem título';
+
+          const meta = document.createElement('p');
+          meta.className = 'text-[10px] text-zinc-500 mt-0.5 flex items-center gap-1.5';
+          meta.innerHTML = `<span>${conv.model.split(':')[0]}</span> • <span>${new Date(conv.updated_at).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'})}</span>`;
+
+          info.appendChild(title);
+          info.appendChild(meta);
+
+          const delBtn = document.createElement('button');
+          delBtn.className = 'p-1.5 text-zinc-500 hover:text-rose-400 rounded-lg hover:bg-rose-500/10 transition-colors';
+          delBtn.innerHTML = '<svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"/></svg>';
+          delBtn.onclick = (e) => { e.stopPropagation(); deleteConversation(conv.id); };
+
+          item.appendChild(info);
+          item.appendChild(delBtn);
+          conversationsList.appendChild(item);
+        });
+      } catch (err) {
+        conversationsList.innerHTML = '<div class="text-center py-4 text-xs text-rose-400">Erro ao carregar conversas</div>';
+      }
+    }
+
+    async function selectConversation(id) {
+      currentConversationId = id;
+      localStorage.setItem('agy_conv_id', id);
+      chatContainer.innerHTML = '';
+
+      try {
+        const res = await fetch(`/api/conversations/${id}`);
+        const data = await res.json();
+        if (data.model) {
+          selectedModel = data.model;
+          modelSelect.value = data.model;
+        }
+        if (data.messages && data.messages.length > 0) {
+          emptyState.classList.add('hidden');
+          data.messages.forEach(m => appendMessage(m.role, m.content));
+        } else {
+          chatContainer.appendChild(emptyState);
+          emptyState.classList.remove('hidden');
+        }
+      } catch (err) {
+        alert('Erro ao carregar sessão: ' + err);
+      }
+    }
+
+    async function deleteConversation(id) {
+      if (!confirm('Deseja excluir esta conversa do histórico?')) return;
+      try {
+        await fetch(`/api/conversations/${id}`, { method: 'DELETE' });
+        if (currentConversationId === id) {
+          newConversation();
+        }
+        loadConversations();
+      } catch (err) {
+        alert('Erro ao excluir: ' + err);
+      }
+    }
+
+    // Models Loading
+    async function loadModels() {
+      try {
+        const res = await fetch('/api/models');
+        const data = await res.json();
+        if (data.models && data.models.length > 0) {
+          modelSelect.innerHTML = '';
+          data.models.forEach(m => {
+            const opt = document.createElement('option');
+            opt.value = m.id;
+            opt.textContent = `${m.name} [${m.badge}]`;
+            opt.className = 'bg-zinc-900 text-zinc-100';
+            if (m.id === selectedModel) opt.selected = true;
+            modelSelect.appendChild(opt);
+          });
+        }
+      } catch (e) {}
+    }
+    loadModels();
+
+    function changeModel(model) {
+      selectedModel = model;
+      localStorage.setItem('agy_model', model);
+    }
+
+    function autoResize(el) {
+      el.style.height = 'auto';
+      el.style.height = Math.min(el.scrollHeight, 128) + 'px';
+    }
+
+    function handleKeyDown(e) {
+      if (e.key === 'Enter' && !e.shiftKey) {
+        e.preventDefault();
+        handleSubmit(e);
+      }
+    }
+
+    function scrollToBottom() {
+      chatContainer.scrollTop = chatContainer.scrollHeight;
+    }
+
+    async function checkStatus() {
+      try {
+        const res = await fetch('/api/status');
+        const data = await res.json();
+        if (data.online) {
+          statusDot.className = 'w-2 h-2 rounded-full bg-emerald-500';
+          btnWol.classList.add('hidden');
+        } else {
+          statusDot.className = 'w-2 h-2 rounded-full bg-rose-500';
+          btnWol.classList.remove('hidden');
+        }
+      } catch (err) {
+        statusDot.className = 'w-2 h-2 rounded-full bg-amber-500';
+      }
+    }
+    checkStatus();
+    setInterval(checkStatus, 10000);
+
+    async function triggerWol() {
+      btnWol.disabled = true;
+      btnWol.textContent = 'Enviando...';
+      try {
+        const res = await fetch('/api/wol', { method: 'POST' });
+        const data = await res.json();
+        alert(data.message || 'Magic Packet disparado!');
+        setTimeout(checkStatus, 3000);
+      } catch (err) {
+        alert('Erro ao disparar WoL: ' + err);
+      } finally {
+        btnWol.disabled = false;
+        btnWol.innerHTML = '<svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z"/></svg><span>WoL</span>';
+      }
+    }
+
+    function newConversation() {
+      currentConversationId = null;
+      localStorage.removeItem('agy_conv_id');
+      chatContainer.innerHTML = '';
+      chatContainer.appendChild(emptyState);
+      emptyState.classList.remove('hidden');
+    }
+
+    function sendQuick(text) {
+      userInput.value = text;
+      autoResize(userInput);
+      handleSubmit(new Event('submit'));
+    }
+
+    // Voice Dictation
+    function setupSpeech() {
+      const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+      if (!SpeechRecognition) {
+        btnMic.classList.add('hidden');
+        return;
+      }
+      recognition = new SpeechRecognition();
+      recognition.lang = 'pt-BR';
+      recognition.continuous = true;
+      recognition.interimResults = true;
+
+      recognition.onstart = () => {
+        isListening = true;
+        btnMic.classList.remove('bg-zinc-800', 'text-zinc-300');
+        btnMic.classList.add('bg-rose-600', 'text-white', 'animate-pulse');
+      };
+
+      recognition.onend = () => {
+        isListening = false;
+        btnMic.classList.remove('bg-rose-600', 'text-white', 'animate-pulse');
+        btnMic.classList.add('bg-zinc-800', 'text-zinc-300');
+      };
+
+      recognition.onresult = (e) => {
+        let transcript = '';
+        for (let i = e.resultIndex; i < e.results.length; i++) {
+          transcript += e.results[i][0].transcript;
+        }
+        userInput.value = transcript;
+        autoResize(userInput);
+      };
+
+      recognition.onerror = () => { recognition.stop(); };
+    }
+    setupSpeech();
+
+    function toggleSpeech() {
+      if (!recognition) return;
+      if (isListening) recognition.stop();
+      else recognition.start();
+    }
+
+    function appendMessage(role, text = '') {
+      if (!emptyState.classList.contains('hidden')) {
+        emptyState.classList.add('hidden');
+      }
+
+      const wrapper = document.createElement('div');
+      wrapper.className = role === 'user' ? 'flex justify-end' : 'flex justify-start';
+
+      const bubble = document.createElement('div');
+      bubble.className = role === 'user'
+        ? 'max-w-[85%] rounded-2xl rounded-tr-sm bg-brand-600 text-white px-3.5 py-2.5 text-sm leading-relaxed shadow-sm'
+        : 'max-w-[92%] rounded-2xl rounded-tl-sm bg-zinc-900 border border-zinc-800/80 px-3.5 py-2.5 text-sm leading-relaxed shadow-sm text-zinc-100 markdown-body';
+
+      if (role === 'user') {
+        bubble.textContent = text;
+      } else {
+        bubble.innerHTML = marked.parse(text);
+      }
+
+      wrapper.appendChild(bubble);
+      chatContainer.appendChild(wrapper);
+      scrollToBottom();
+      return bubble;
+    }
+
+    async function handleSubmit(e) {
+      e.preventDefault();
+      const text = userInput.value.trim();
+      if (!text || isGenerating) return;
+
+      if (isListening && recognition) recognition.stop();
+
+      appendMessage('user', text);
+      userInput.value = '';
+      autoResize(userInput);
+
+      isGenerating = true;
+      btnSend.disabled = true;
+      sendIcon.classList.add('hidden');
+      spinIcon.classList.remove('hidden');
+
+      const agentBubble = appendMessage('agent', '');
+      agentBubble.classList.add('typing-cursor');
+
+      let accumulatedText = '';
+      let toolPill = null;
+
+      try {
+        const response = await fetch('/api/chat', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            prompt: text,
+            conversation_id: currentConversationId,
+            model: selectedModel
+          })
+        });
+
+        const reader = response.body.getReader();
+        const decoder = new TextDecoder('utf-8');
+        let buffer = '';
+
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+
+          buffer += decoder.decode(value, { stream: true });
+          const lines = buffer.split('\n');
+          buffer = lines.pop();
+
+          for (const line of lines) {
+            const trimmed = line.trim();
+            if (!trimmed.startsWith('data:')) continue;
+            const dataStr = trimmed.slice(5).trim();
+            if (dataStr === '[DONE]') continue;
+
+            try {
+              const event = JSON.parse(dataStr);
+              if (event.type === 'init') {
+                if (event.conversation_id) {
+                  currentConversationId = event.conversation_id;
+                  localStorage.setItem('agy_conv_id', currentConversationId);
+                }
+              } else if (event.type === 'delta') {
+                accumulatedText += event.text;
+                agentBubble.innerHTML = marked.parse(accumulatedText);
+                scrollToBottom();
+              } else if (event.type === 'tool') {
+                if (!toolPill) {
+                  toolPill = document.createElement('div');
+                  toolPill.className = 'text-[11px] font-mono text-amber-400 bg-amber-950/40 border border-amber-800/40 rounded px-2 py-0.5 mt-2 mb-1 inline-flex items-center gap-1';
+                  agentBubble.parentNode.insertBefore(toolPill, agentBubble.nextSibling);
+                }
+                toolPill.textContent = '⚡ ' + event.tools.join(', ');
+                scrollToBottom();
+              } else if (event.type === 'done') {
+                if (event.conversation_id) {
+                  currentConversationId = event.conversation_id;
+                  localStorage.setItem('agy_conv_id', currentConversationId);
+                }
+                if (toolPill) {
+                  toolPill.remove();
+                  toolPill = null;
+                }
+              } else if (event.type === 'error') {
+                accumulatedText += `\n\n> ⚠️ **Erro:** ${event.error}`;
+                agentBubble.innerHTML = marked.parse(accumulatedText);
+              }
+            } catch (err) {}
+          }
+        }
+      } catch (err) {
+        agentBubble.innerHTML = marked.parse(`> ❌ **Falha de rede:** ${err.message}`);
+      } finally {
+        agentBubble.classList.remove('typing-cursor');
+        agentBubble.innerHTML = marked.parse(accumulatedText || '*(Sem resposta)*');
+        if (toolPill) toolPill.remove();
+        isGenerating = false;
+        btnSend.disabled = false;
+        sendIcon.classList.remove('hidden');
+        spinIcon.classList.add('hidden');
+        scrollToBottom();
+      }
+    }
+  </script>
+</body>
+</html>

@@ -1,0 +1,8 @@
+__pycache__/
+*.pyc
+*.pyo
+.env
+ssh/id_*
+!ssh/id_*.pub
+data/
+.DS_Store
