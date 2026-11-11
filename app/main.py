@@ -133,7 +133,7 @@ async def list_conversations():
     is_online = await asyncio.to_thread(check_target_online, TARGET_HOST, 22, 1.5)
     if is_online:
         # Single Source of Truth: query CachyCore directly for complete sync
-        stdout = await run_ssh_command("python3 /home/ai/bin/agy-gateway-sync.py list 30", timeout=4.0)
+        stdout = await run_ssh_command("python3 /home/ai/bin/agy-gateway-sync.py list 100", timeout=6.0)
         if stdout:
             try:
                 data = json.loads(stdout)
