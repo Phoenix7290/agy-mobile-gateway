@@ -339,6 +339,16 @@ async def _run_agy_job(
                             "preview": str(cmd_preview)[:80],
                         },
                     )
+                    if tool_name in ("ask_permission", "ask_custom_permission") or tool_state == "WAITING":
+                        await _emit_event(
+                            job_id,
+                            "approval_needed",
+                            {
+                                "type": "approval_needed",
+                                "tool": tool_name,
+                                "command": str(cmd_preview),
+                            },
+                        )
                 elif step_type == "agent_response":
                     delta = step.get("text_delta")
                     if delta:
@@ -565,6 +575,15 @@ async def get_status():
 @app.get("/api/watchdog")
 async def get_watchdog():
     return WATCHDOG_STATE
+
+
+@app.get("/api/telemetry")
+async def get_telemetry():
+    if not cfg.mods.get("telemetry"):
+        return {"enabled": False}
+    data = await runner.get_telemetry()
+    data["enabled"] = True
+    return data
 
 
 @app.get("/api/features")

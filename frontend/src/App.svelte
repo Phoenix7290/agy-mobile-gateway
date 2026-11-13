@@ -76,10 +76,14 @@
   const slashCommands = [
     { cmd: '/usage', desc: 'Cota restante de tokens/modelos' },
     { cmd: '/compact', desc: 'Compactar histórico da sessão' },
+    { cmd: '/diff', desc: 'Exibir git status e diff atual' },
+    { cmd: '/mem', desc: 'Consultar memória persistente (ai-memory)' },
     { cmd: '/plan', desc: 'Ativar modo Planejamento (Leitura)' },
     { cmd: '/clear', desc: 'Limpar e iniciar nova conversa' },
     { cmd: '/status', desc: 'Status do Watchdog & recursos' },
   ];
+
+  let approvalNeeded = $state<{ tool: string; command: string } | null>(null);
 
   async function runSlashCommand(cmd: string) {
     slashMenuOpen = false;
@@ -92,6 +96,16 @@
       permissionMode = 'readonly';
       messages = [...messages, { role: 'agent', content: '**Modo Planejamento (`readonly`) ativado.** Nenhuma alteração será aplicada sem revisão.' }];
       scrollToBottom();
+      return;
+    }
+    if (cmd === '/diff') {
+      userInput = 'Execute git status -s e git diff no workspace atual e exiba a saída dentro de um bloco ```diff.';
+      await handleSubmit();
+      return;
+    }
+    if (cmd === '/mem') {
+      userInput = 'Consulte no ai-memory: ';
+      textareaEl?.focus();
       return;
     }
     if (cmd === '/status') {
@@ -200,6 +214,7 @@
     }
     stopElapsedTimer();
     liveStatus = '';
+    approvalNeeded = null;
     isGenerating = false;
   }
 
@@ -277,6 +292,13 @@
               }
               const preview = ev.preview ? ` (${String(ev.preview).slice(0, 28)}...)` : '';
               liveStatus = ev.state === 'ACTIVE' ? `Executando: ${tName}${preview}` : `Concluído: ${tName}`;
+              scrollToBottom();
+            } else if (ev.type === 'approval_needed') {
+              approvalNeeded = {
+                tool: ev.tool || 'permissão',
+                command: ev.command || '',
+              };
+              liveStatus = 'Aguardando aprovação humana (HITL)...';
               scrollToBottom();
             } else if (ev.type === 'done') {
               jobFinished = true;
@@ -607,6 +629,45 @@
     {/if}
   </main>
 
+  <!-- Interactive HITL Approval Card -->
+  {#if approvalNeeded}
+    <div class="mx-2.5 mb-2 p-3 rounded-xl bg-amber-950/50 border border-amber-600/50 text-amber-100 space-y-2 shrink-0">
+      <div class="flex items-center justify-between gap-2 text-xs font-semibold text-amber-300">
+        <div class="flex items-center gap-1.5">
+          <Icon name="shield" size={15} />
+          <span>Aprovação HITL Necessária ({approvalNeeded.tool})</span>
+        </div>
+      </div>
+      {#if approvalNeeded.command}
+        <pre class="bg-zinc-950/90 border border-zinc-800 rounded-lg p-2 text-[11px] font-mono text-zinc-200 overflow-x-auto">{approvalNeeded.command}</pre>
+      {/if}
+      <div class="flex items-center gap-2">
+        {#if features.terminal}
+          <button
+            type="button"
+            onclick={async () => {
+              if (approvalNeeded?.command) {
+                await navigator.clipboard.writeText(approvalNeeded.command).catch(() => {});
+              }
+              terminalOpen = true;
+            }}
+            class="flex-1 py-1.5 px-2.5 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-semibold flex items-center justify-center gap-1.5"
+          >
+            <Icon name="terminal" size={14} />
+            <span>Copiar & Abrir Terminal</span>
+          </button>
+        {/if}
+        <button
+          type="button"
+          onclick={handleCancelActiveJob}
+          class="py-1.5 px-3 rounded-lg bg-rose-600/30 hover:bg-rose-600/40 text-rose-200 border border-rose-500/40 text-xs font-semibold"
+        >
+          Rejeitar
+        </button>
+      </div>
+    </div>
+  {/if}
+
   <!-- Live Status Bar -->
   {#if isGenerating && liveStatus}
     <div class="px-3 py-1.5 bg-zinc-900/90 border-t border-zinc-800/80 flex items-center justify-between text-[11px] text-sky-400 font-mono shrink-0">
@@ -779,6 +840,7 @@
   activeConvId={conversationId}
   {models}
   watchdogEnabled={features.watchdog !== false}
+  telemetryEnabled={features.telemetry === true}
   bind:settings={settings}
   onSelectConversation={loadConversation}
   onNewConversation={newConversation}

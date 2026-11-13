@@ -14,6 +14,7 @@ services:
       - WOL_MAC=${WOL_MAC:-bc:fc:e7:ca:84:05}
       - SSH_KEY=${SSH_KEY:-/root/.ssh/id_ed25519}
       - PORT=${PORT:-8088}
+      - ENABLE_TELEMETRY=${ENABLE_TELEMETRY:-true}
 
   agy-ttyd:
     build:

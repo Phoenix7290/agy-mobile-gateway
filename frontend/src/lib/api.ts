@@ -46,8 +46,20 @@ export async function fetchStatus(): Promise<{ online: boolean; target_host: str
   return res.json();
 }
 
+export interface TelemetryData {
+  enabled?: boolean;
+  gpu: { name: string; vram_used_mb: number; vram_total_mb: number; temp_c: number } | null;
+  cpu_temp: number | null;
+  ram: { used_mb: number; total_mb: number } | null;
+}
+
 export async function fetchWatchdog(): Promise<WatchdogState> {
   const res = await fetch('/api/watchdog');
+  return res.json();
+}
+
+export async function fetchTelemetry(): Promise<TelemetryData> {
+  const res = await fetch('/api/telemetry');
   return res.json();
 }
 

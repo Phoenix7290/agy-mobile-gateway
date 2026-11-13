@@ -3,12 +3,14 @@
   import {
     deleteConversation,
     fetchConversations,
+    fetchTelemetry,
     fetchWatchdog,
     updateSettings,
     type ConversationSummary,
     type GatewaySettings,
     type ModelInfo,
     type PermissionMode,
+    type TelemetryData,
     type WatchdogState,
   } from '../lib/api';
 
@@ -17,6 +19,7 @@
     activeConvId,
     models,
     watchdogEnabled = true,
+    telemetryEnabled = false,
     settings = $bindable<GatewaySettings>(),
     onSelectConversation,
     onNewConversation,
@@ -26,6 +29,7 @@
     activeConvId: string | null;
     models: ModelInfo[];
     watchdogEnabled?: boolean;
+    telemetryEnabled?: boolean;
     settings: GatewaySettings;
     onSelectConversation: (id: string) => void;
     onNewConversation: () => void;
@@ -41,6 +45,7 @@
   let savingSettings = $state(false);
   let settingsSavedMsg = $state('');
   let watchdog = $state<WatchdogState | null>(null);
+  let telemetry = $state<TelemetryData | null>(null);
 
   const PAGE_SIZE = 30;
 
@@ -90,8 +95,13 @@
   $effect(() => {
     if (open && activeTab === 'chats') {
       load(true);
-    } else if (open && activeTab === 'settings' && watchdogEnabled) {
-      fetchWatchdog().then((w) => (watchdog = w)).catch(() => {});
+    } else if (open && activeTab === 'settings') {
+      if (watchdogEnabled) {
+        fetchWatchdog().then((w) => (watchdog = w)).catch(() => {});
+      }
+      if (telemetryEnabled) {
+        fetchTelemetry().then((t) => (telemetry = t)).catch(() => {});
+      }
     }
   });
 
@@ -294,6 +304,37 @@
             {#if watchdog.last_seen_online}
               <div class="text-[10px] text-zinc-500">
                 Visto por último: {new Date(watchdog.last_seen_online).toLocaleTimeString('pt-BR')}
+              </div>
+            {/if}
+          </div>
+        {/if}
+
+        {#if telemetryEnabled && telemetry && telemetry.enabled}
+          <div class="p-3 rounded-xl bg-zinc-950 border border-zinc-800 space-y-1.5">
+            <div class="flex items-center justify-between text-xs font-semibold text-zinc-200">
+              <span>Telemetria de Hardware</span>
+              <Icon name="cpu" size={14} class="text-sky-400" />
+            </div>
+            {#if telemetry.gpu}
+              <div class="text-[11px] text-zinc-300 flex justify-between">
+                <span class="truncate pr-2">{telemetry.gpu.name}</span>
+                <span class="font-mono text-sky-400 shrink-0">{telemetry.gpu.temp_c}°C</span>
+              </div>
+              <div class="text-[11px] text-zinc-500 flex justify-between">
+                <span>VRAM</span>
+                <span class="font-mono">{telemetry.gpu.vram_used_mb} / {telemetry.gpu.vram_total_mb} MB</span>
+              </div>
+            {/if}
+            {#if telemetry.ram}
+              <div class="text-[11px] text-zinc-500 flex justify-between">
+                <span>RAM</span>
+                <span class="font-mono">{Math.round(telemetry.ram.used_mb / 1024)} / {Math.round(telemetry.ram.total_mb / 1024)} GB</span>
+              </div>
+            {/if}
+            {#if telemetry.cpu_temp !== null}
+              <div class="text-[11px] text-zinc-500 flex justify-between">
+                <span>CPU Temp</span>
+                <span class="font-mono">{telemetry.cpu_temp}°C</span>
               </div>
             {/if}
           </div>

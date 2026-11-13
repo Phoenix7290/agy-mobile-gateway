@@ -55,6 +55,9 @@ class BaseRunner:
     async def delete_outbox_file(self, filename: str) -> None:
         raise NotImplementedError
 
+    async def get_telemetry(self) -> Dict[str, Any]:
+        raise NotImplementedError
+
 
 class SSHRunner(BaseRunner):
     """Gateway mode: executes AGY/Ollama/Inbox/Outbox on a remote workstation over SSH/SCP."""
@@ -176,6 +179,33 @@ class SSHRunner(BaseRunner):
     async def delete_outbox_file(self, filename: str) -> None:
         remote_path = f"{self.cfg.dirs.outbox_dir}/{filename}"
         await self._run_ssh(f"rm -f {shlex.quote(remote_path)}", timeout=4.0)
+
+    async def get_telemetry(self) -> Dict[str, Any]:
+        py_cmd = (
+            "python3 -c 'import json,subprocess,glob;"
+            "res={\"gpu\":None,\"cpu_temp\":None,\"ram\":None};"
+            "\ntry:\n"
+            " o=subprocess.check_output([\"nvidia-smi\",\"--query-gpu=name,memory.used,memory.total,temperature.gpu\",\"--format=csv,noheader,nounits\"],timeout=2).decode().strip().split(\", \")\n"
+            " res[\"gpu\"]={\"name\":o[0],\"vram_used_mb\":round(float(o[1])),\"vram_total_mb\":round(float(o[2])),\"temp_c\":round(float(o[3]))}\n"
+            "except Exception: pass\n"
+            "try:\n"
+            " m={k:int(v.split()[0]) for k,v in (l.split(\":\") for l in open(\"/proc/meminfo\") if \":\" in l)}\n"
+            " tot=m.get(\"MemTotal\",0)//1024; avail=m.get(\"MemAvailable\",0)//1024\n"
+            " res[\"ram\"]={\"used_mb\":tot-avail,\"total_mb\":tot}\n"
+            "except Exception: pass\n"
+            "try:\n"
+            " temps=[int(open(p).read().strip())/1000 for p in glob.glob(\"/sys/class/hwmon/hwmon*/temp1_input\")[:4]]\n"
+            " if temps: res[\"cpu_temp\"]=round(max(temps),1)\n"
+            "except Exception: pass\n"
+            "print(json.dumps(res))'"
+        )
+        stdout = await self._run_ssh(py_cmd, timeout=4.0)
+        if stdout:
+            try:
+                return json.loads(stdout)
+            except Exception:
+                pass
+        return {"gpu": None, "cpu_temp": None, "ram": None}
 
 
 class LocalRunner(BaseRunner):
@@ -319,6 +349,35 @@ class LocalRunner(BaseRunner):
         path = os.path.join(self.cfg.dirs.outbox_dir, filename)
         if os.path.isfile(path):
             os.remove(path)
+
+    async def get_telemetry(self) -> Dict[str, Any]:
+        def _probe() -> Dict[str, Any]:
+            import subprocess
+            res: Dict[str, Any] = {"gpu": None, "cpu_temp": None, "ram": None}
+            try:
+                out = subprocess.check_output(
+                    ["nvidia-smi", "--query-gpu=name,memory.used,memory.total,temperature.gpu", "--format=csv,noheader,nounits"],
+                    timeout=2,
+                ).decode().strip().split(", ")
+                res["gpu"] = {"name": out[0], "vram_used_mb": round(float(out[1])), "vram_total_mb": round(float(out[2])), "temp_c": round(float(out[3]))}
+            except Exception:
+                pass
+            try:
+                if os.path.isfile("/proc/meminfo"):
+                    m = {k: int(v.split()[0]) for k, v in (l.split(":") for l in open("/proc/meminfo") if ":" in l)}
+                    tot = m.get("MemTotal", 0) // 1024
+                    avail = m.get("MemAvailable", 0) // 1024
+                    res["ram"] = {"used_mb": tot - avail, "total_mb": tot}
+            except Exception:
+                pass
+            try:
+                temps = [int(open(p).read().strip()) / 1000 for p in glob.glob("/sys/class/hwmon/hwmon*/temp1_input")[:4]]
+                if temps:
+                    res["cpu_temp"] = round(max(temps), 1)
+            except Exception:
+                pass
+            return res
+        return await asyncio.to_thread(_probe)
 
 
 def create_runner(cfg: GatewaySettings) -> BaseRunner:

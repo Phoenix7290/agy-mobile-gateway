@@ -100,8 +100,8 @@ def load_config() -> GatewaySettings:
         "ai_memory": _bool_env("ENABLE_AI_MEMORY", False) or bool(os.getenv("AI_MEMORY_SERVER_URL")),
         "ntfy": _bool_env("ENABLE_NTFY", False) or bool(os.getenv("NTFY_TOPIC")),
         "whisper": _bool_env("ENABLE_WHISPER", False),
-        "telemetry": _bool_env("ENABLE_TELEMETRY", False),
-        "slash_commands": ["/compact", "/usage", "/plan", "/clear", "/status"],
+        "telemetry": _bool_env("ENABLE_TELEMETRY", is_gateway),
+        "slash_commands": ["/compact", "/usage", "/diff", "/mem", "/plan", "/clear", "/status"],
     }
 
     return GatewaySettings(
