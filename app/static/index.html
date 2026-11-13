@@ -106,6 +106,12 @@
 
     <!-- Header Actions -->
     <div class="flex items-center space-x-1.5">
+      <!-- Outbox Files Button -->
+      <button onclick="toggleOutbox()" title="Arquivos Gerados (Outbox)" class="p-2 rounded-xl bg-zinc-800 text-amber-400 hover:text-amber-300 border border-zinc-700/60 active:scale-95 transition-all flex items-center relative">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.85" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+        <span id="outbox-badge" class="hidden absolute -top-1 -right-1 w-4 h-4 bg-amber-500 text-zinc-950 font-bold text-[9px] rounded-full flex items-center justify-center">0</span>
+      </button>
+
       <!-- Terminal Button (Human-in-the-Loop Sudo) -->
       <button onclick="toggleTerminal()" title="Terminal Sudo (Human-in-the-Loop)" class="p-2 rounded-xl bg-zinc-800 text-emerald-400 hover:text-emerald-300 border border-zinc-700/60 hover:bg-zinc-700/50 active:scale-95 transition-all flex items-center gap-1">
         <svg class="w-4 h-4 font-mono" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 9l3 3-3 3m5 0h3M5 20h14a2 2 0 002-2V6a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z"/></svg>
@@ -124,24 +130,76 @@
     </div>
   </header>
 
+  <!-- Outbox Files Modal -->
+  <div id="outbox-modal" class="fixed inset-0 bg-black/60 backdrop-blur-sm z-50 flex flex-col justify-end sm:justify-center items-center hidden transition-opacity">
+    <div class="bg-zinc-900 border border-zinc-800 rounded-t-2xl sm:rounded-2xl w-full sm:max-w-md max-h-[80vh] flex flex-col shadow-2xl overflow-hidden select-none">
+      <div class="p-3.5 border-b border-zinc-800 flex items-center justify-between">
+        <div class="flex items-center space-x-2">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.85" stroke-linecap="round" stroke-linejoin="round" class="text-amber-400"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+          <h3 class="text-sm font-bold text-zinc-100">Arquivos Prontos (Outbox)</h3>
+        </div>
+        <div class="flex items-center space-x-1">
+          <button onclick="loadOutboxFiles()" title="Atualizar Lista" class="p-1.5 rounded-lg text-zinc-400 hover:text-amber-400 transition-colors">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.85" stroke-linecap="round" stroke-linejoin="round"><path d="M21.5 2v6h-6M21.34 15.57a10 10 0 1 1-.57-8.38l5.67-5.67"/></svg>
+          </button>
+          <button onclick="toggleOutbox()" class="p-1.5 rounded-lg text-zinc-400 hover:text-zinc-200">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.85" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+          </button>
+        </div>
+      </div>
+      <div id="outbox-list" class="flex-1 overflow-y-auto p-3 space-y-2">
+        <div class="text-center py-6 text-xs text-zinc-500">Nenhum arquivo no outbox.</div>
+      </div>
+      <div class="p-2.5 bg-zinc-950 border-t border-zinc-800/60 text-[11px] text-zinc-500 text-center">
+        Arquivos salvos pelo AGY em <code class="text-zinc-400 font-mono">/home/ai/agy-outbox/</code>
+      </div>
+    </div>
+  </div>
+
   <!-- Interactive Terminal Sheet / Modal -->
   <div id="terminal-modal" class="fixed inset-0 bg-zinc-950 z-50 flex flex-col hidden select-none">
-    <div class="bg-zinc-900 px-4 py-2.5 border-b border-zinc-800 flex items-center justify-between shrink-0">
+    <div class="bg-zinc-900 px-4 py-2 border-b border-zinc-800 flex items-center justify-between shrink-0">
       <div class="flex items-center space-x-2">
         <div class="w-2.5 h-2.5 rounded-full bg-emerald-500 animate-pulse"></div>
         <span class="text-xs font-mono font-bold text-zinc-200">Terminal ryanslx@CachyCore (Sudo / HITL)</span>
       </div>
-      <div class="flex items-center space-x-2">
+      <div class="flex items-center space-x-1.5">
         <button onclick="reloadTerminal()" title="Recarregar Sessão" class="p-1.5 rounded-lg bg-zinc-800 text-zinc-400 hover:text-zinc-200 text-xs">
-          <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"/></svg>
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.85" stroke-linecap="round" stroke-linejoin="round"><path d="M21.5 2v6h-6M21.34 15.57a10 10 0 1 1-.57-8.38l5.67-5.67"/></svg>
         </button>
         <button onclick="toggleTerminal()" class="px-2.5 py-1 rounded-lg bg-rose-600/20 text-rose-400 border border-rose-500/30 hover:bg-rose-600/30 text-xs font-semibold">
           Fechar
         </button>
       </div>
     </div>
-    <div class="flex-1 w-full h-full bg-zinc-950 relative">
+    
+    <!-- Terminal iframe container -->
+    <div class="flex-1 w-full h-full bg-zinc-950 relative overflow-hidden">
       <iframe id="terminal-frame" src="" class="w-full h-full border-0"></iframe>
+    </div>
+
+    <!-- Mobile Terminal Helper & Paste Toolbar -->
+    <div id="terminal-toolbar" class="bg-zinc-900/95 border-t border-zinc-800 p-2 flex flex-col gap-1.5 shrink-0">
+      <!-- Action Pills -->
+      <div class="flex items-center gap-1.5 overflow-x-auto no-scrollbar">
+        <button type="button" onclick="sendTerminalKey('ESC')" class="px-2.5 py-1 rounded bg-zinc-800 hover:bg-zinc-700 text-zinc-200 text-[11px] font-mono border border-zinc-700 shrink-0">Esc</button>
+        <button type="button" onclick="sendTerminalKey('TAB')" class="px-2.5 py-1 rounded bg-zinc-800 hover:bg-zinc-700 text-zinc-200 text-[11px] font-mono border border-zinc-700 shrink-0">Tab</button>
+        <button type="button" onclick="sendTerminalKey('CTRL_C')" class="px-2.5 py-1 rounded bg-rose-950/60 hover:bg-rose-900/60 text-rose-300 text-[11px] font-mono border border-rose-800/60 shrink-0">Ctrl+C</button>
+        <button type="button" onclick="sendTerminalKey('UP')" class="px-2 py-1 rounded bg-zinc-800 hover:bg-zinc-700 text-zinc-200 text-[11px] font-mono border border-zinc-700 shrink-0">▲</button>
+        <button type="button" onclick="sendTerminalKey('DOWN')" class="px-2 py-1 rounded bg-zinc-800 hover:bg-zinc-700 text-zinc-200 text-[11px] font-mono border border-zinc-700 shrink-0">▼</button>
+        <button type="button" onclick="insertTerminalText('sudo ')" class="px-2.5 py-1 rounded bg-emerald-950/60 hover:bg-emerald-900/60 text-emerald-300 text-[11px] font-mono border border-emerald-800/60 shrink-0">sudo</button>
+        <button type="button" onclick="pasteToTerminalInput()" class="px-2.5 py-1 rounded bg-brand-600/20 hover:bg-brand-600/30 text-brand-300 text-[11px] font-mono border border-brand-500/40 shrink-0 flex items-center gap-1">
+          <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.85" stroke-linecap="round" stroke-linejoin="round"><path d="M16 4h2a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h2"/><rect x="8" y="2" width="8" height="4" rx="1" ry="1"/></svg>
+          <span>Colar</span>
+        </button>
+      </div>
+      <!-- Quick Command Input -->
+      <div class="flex items-center gap-1.5">
+        <input type="text" id="term-input" placeholder="Comando rápido / colar texto..." class="flex-1 bg-zinc-950 border border-zinc-700/80 rounded-lg px-2.5 py-1.5 text-xs font-mono text-zinc-100 placeholder-zinc-500 focus:outline-none focus:border-brand-500" onkeydown="if(event.key==='Enter')submitTerminalInput()">
+        <button type="button" onclick="submitTerminalInput()" class="px-3 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-mono font-semibold shrink-0">
+          Enviar
+        </button>
+      </div>
     </div>
   </div>
 
@@ -666,7 +724,10 @@
       stopLiveStatus();
       if (activeAgentBubble) {
         activeAgentBubble.classList.remove('typing-cursor');
-        activeAgentBubble.innerHTML = marked.parse(activeAccumulatedText || '*(Sem resposta)*');
+        if (!activeAccumulatedText || !activeAccumulatedText.trim()) {
+          activeAccumulatedText = '*Instrução processada com sucesso no CachyCore.*';
+        }
+        activeAgentBubble.innerHTML = marked.parse(activeAccumulatedText);
         enhanceCodeBlocks(activeAgentBubble);
         activeAgentBubble = null;
       }
@@ -685,6 +746,7 @@
       activeStreamAbort = controller;
 
       let jobFinished = false;
+      let currentJobTools = [];
 
       try {
         const response = await fetch(`/api/jobs/${jobId}/events?after=${afterSeq}`, {
@@ -755,6 +817,9 @@
                 scrollToBottom();
               } else if (event.type === 'tool') {
                 const toolName = event.name || 'ferramenta';
+                if (event.name && !currentJobTools.includes(event.name)) {
+                  currentJobTools.push(event.name);
+                }
                 const preview = event.preview ? ` (${event.preview.slice(0, 32)}...)` : '';
                 if (event.state === 'ACTIVE') {
                   liveStatusText.textContent = `Executando: ${toolName}${preview}`;
@@ -767,6 +832,22 @@
                 if (event.conversation_id) {
                   currentConversationId = event.conversation_id;
                   localStorage.setItem('agy_conv_id', currentConversationId);
+                }
+                if (!activeAccumulatedText || !activeAccumulatedText.trim()) {
+                  if (event.response && event.response.trim()) {
+                    activeAccumulatedText = event.response.trim();
+                  } else {
+                    const tools = (event.executed_tools && event.executed_tools.length) ? event.executed_tools : currentJobTools;
+                    if (tools.length > 0) {
+                      activeAccumulatedText = '*Instruções executadas no CachyCore com sucesso.*\n\n**Ações executadas:**\n' + tools.map(t => `- \`${t}\``).join('\n');
+                    } else {
+                      activeAccumulatedText = '*Instrução concluída com sucesso no CachyCore.*';
+                    }
+                  }
+                }
+                if (activeAgentBubble) {
+                  activeAgentBubble.innerHTML = marked.parse(activeAccumulatedText);
+                  enhanceCodeBlocks(activeAgentBubble);
                 }
               } else if (event.type === 'error') {
                 jobFinished = true;

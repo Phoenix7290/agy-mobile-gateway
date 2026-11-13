@@ -1,11 +1,13 @@
 import os
+import re
 import json
 import uuid
 import shlex
 import socket
 import asyncio
+import mimetypes
 from typing import Optional, List, Dict, Any
-from fastapi import FastAPI, HTTPException, Header, Query
+from fastapi import FastAPI, HTTPException, Header, Query, UploadFile, File
 from fastapi.responses import HTMLResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
@@ -13,7 +15,7 @@ import wakeonlan
 
 from db import GatewayDB
 
-app = FastAPI(title="AGY Mobile Gateway", version="3.0.0")
+app = FastAPI(title="AGY Mobile Gateway", version="3.1.0")
 
 TARGET_HOST = os.getenv("TARGET_HOST", "192.168.1.190")
 TARGET_USER = os.getenv("TARGET_USER", "ai")
@@ -50,6 +52,7 @@ class JobCreateRequest(BaseModel):
     conversation_id: Optional[str] = None
     model: Optional[str] = "gemini-3.8-flash-high"
     permission_mode: Optional[str] = "copilot"
+    attached_files: Optional[List[str]] = None
 
 
 class WolRequest(BaseModel):
@@ -66,7 +69,8 @@ def check_target_online(host: str, port: int = 22, timeout: float = 1.5) -> bool
 
 async def run_ssh_command(cmd_str: str, timeout: float = 5.0) -> Optional[str]:
     ssh_cmd = [
-        "ssh", "-i", SSH_KEY, "-o", "StrictHostKeyChecking=accept-new",
+        "ssh", "-i", SSH_KEY,
+        "-o", "UserKnownHostsFile=/dev/null", "-o", "StrictHostKeyChecking=no",
         "-o", "BatchMode=yes", "-o", f"ConnectTimeout={int(timeout)}",
         f"{TARGET_USER}@{TARGET_HOST}",
         cmd_str,
@@ -107,7 +111,8 @@ async def _run_ollama_job(job_id: str, conv_id: str, prompt: str, selected_model
     })
 
     cmd = [
-        "ssh", "-i", SSH_KEY, "-o", "StrictHostKeyChecking=accept-new",
+        "ssh", "-i", SSH_KEY,
+        "-o", "UserKnownHostsFile=/dev/null", "-o", "StrictHostKeyChecking=no",
         "-o", "BatchMode=yes", "-o", "ConnectTimeout=5",
         f"{TARGET_USER}@{TARGET_HOST}",
         f"curl -s -N -X POST http://127.0.0.1:11434/api/chat -d {shlex.quote(payload_json)}",
@@ -149,7 +154,7 @@ async def _run_ollama_job(job_id: str, conv_id: str, prompt: str, selected_model
             db.append_local_message(conv_id, "assistant", accumulated)
 
         db.update_job(job_id, conversation_id=conv_id, status="completed")
-        await _emit_event(job_id, "done", {"type": "done", "conversation_id": conv_id, "status": "SUCCESS"})
+        await _emit_event(job_id, "done", {"type": "done", "conversation_id": conv_id, "status": "SUCCESS", "executed_tools": []})
     except Exception as e:
         err_msg = str(e)
         db.update_job(job_id, status="error", error=err_msg)
@@ -177,7 +182,8 @@ async def _run_agy_job(
         agy_cmd += f" --model {shlex.quote(selected_model)}"
 
     ssh_cmd = [
-        "ssh", "-i", SSH_KEY, "-o", "StrictHostKeyChecking=accept-new",
+        "ssh", "-i", SSH_KEY,
+        "-o", "UserKnownHostsFile=/dev/null", "-o", "StrictHostKeyChecking=no",
         "-o", "BatchMode=yes", "-o", "ConnectTimeout=5",
         f"{TARGET_USER}@{TARGET_HOST}",
         agy_cmd,
@@ -185,6 +191,7 @@ async def _run_agy_job(
 
     current_conv_id = conversation_id
     emitted_any = False
+    executed_tools: List[str] = []
 
     try:
         proc = await asyncio.create_subprocess_exec(
@@ -220,6 +227,8 @@ async def _run_agy_job(
                     tool_state = step.get("state", "ACTIVE")
                     params = step.get("tool_info", {}).get("parameters", {})
                     cmd_preview = params.get("CommandLine", "") or params.get("Path", "") or params.get("query", "")
+                    if tool_state == "ACTIVE" and tool_name not in executed_tools:
+                        executed_tools.append(tool_name)
                     await _emit_event(
                         job_id,
                         "tool",
@@ -239,11 +248,31 @@ async def _run_agy_job(
             elif event_type == "result":
                 res = data.get("result", {})
                 current_conv_id = res.get("conversation_id", current_conv_id)
+                final_resp = res.get("response", "").strip() if isinstance(res.get("response"), str) else ""
+                if not emitted_any:
+                    if final_resp:
+                        emitted_any = True
+                        await _emit_event(job_id, "delta", {"type": "delta", "text": final_resp})
+                    elif executed_tools:
+                        emitted_any = True
+                        tools_bullet = "\n".join(f"- `{t}`" for t in executed_tools)
+                        msg = f"*Instruções executadas no CachyCore com sucesso.*\n\n**Ações executadas:**\n{tools_bullet}"
+                        await _emit_event(job_id, "delta", {"type": "delta", "text": msg})
+                    else:
+                        emitted_any = True
+                        await _emit_event(job_id, "delta", {"type": "delta", "text": "*Instrução concluída com sucesso no CachyCore.*"})
+
                 db.update_job(job_id, conversation_id=current_conv_id, status="completed")
                 await _emit_event(
                     job_id,
                     "done",
-                    {"type": "done", "conversation_id": current_conv_id, "status": res.get("status")},
+                    {
+                        "type": "done",
+                        "conversation_id": current_conv_id,
+                        "status": res.get("status", "SUCCESS"),
+                        "executed_tools": executed_tools,
+                        "response": final_resp,
+                    },
                 )
 
         await proc.wait()
@@ -253,12 +282,36 @@ async def _run_agy_job(
             err_msg = err_bytes.decode("utf-8", errors="replace").strip() or f"Processo saiu com código {proc.returncode}"
             db.update_job(job_id, status="error", error=err_msg)
             await _emit_event(job_id, "error", {"type": "error", "error": err_msg})
+        elif not emitted_any:
+            if executed_tools:
+                tools_bullet = "\n".join(f"- `{t}`" for t in executed_tools)
+                msg = f"*Instruções executadas no CachyCore com sucesso.*\n\n**Ações executadas:**\n{tools_bullet}"
+            else:
+                msg = "*Instrução concluída com sucesso no CachyCore.*"
+            await _emit_event(job_id, "delta", {"type": "delta", "text": msg})
+            emitted_any = True
+            db.update_job(job_id, conversation_id=current_conv_id, status="completed")
+            await _emit_event(
+                job_id,
+                "done",
+                {
+                    "type": "done",
+                    "conversation_id": current_conv_id,
+                    "status": "SUCCESS",
+                    "executed_tools": executed_tools,
+                },
+            )
         elif job and job["status"] == "running":
             db.update_job(job_id, conversation_id=current_conv_id, status="completed")
             await _emit_event(
                 job_id,
                 "done",
-                {"type": "done", "conversation_id": current_conv_id, "status": "SUCCESS"},
+                {
+                    "type": "done",
+                    "conversation_id": current_conv_id,
+                    "status": "SUCCESS",
+                    "executed_tools": executed_tools,
+                },
             )
     except Exception as e:
         err_msg = str(e)
@@ -392,6 +445,14 @@ async def create_job(req: JobCreateRequest):
             detail=f"CachyCore ({TARGET_HOST}) está inacessível. Use o botão WoL para ligá-lo.",
         )
 
+    if req.attached_files:
+        files_note = (
+            "[Arquivos anexados pelo usuário em /home/ai/agy-inbox/: "
+            + ", ".join(req.attached_files)
+            + ". Inspecione-os usando read_file conforme necessário.]\n\n"
+        )
+        prompt = files_note + prompt
+
     selected_model = req.model or "gemini-3.8-flash-high"
     permission_mode = req.permission_mode if req.permission_mode in PERMISSION_MODES else "copilot"
     engine = "ollama" if selected_model.startswith("ollama:") else "agy"
@@ -486,3 +547,111 @@ async def stream_job_events(
             "X-Accel-Buffering": "no",
         },
     )
+
+
+# --- Phase 2: Uploads & Outbox Files ---
+
+@app.post("/api/upload")
+async def upload_file(file: UploadFile = File(...)):
+    if not file.filename:
+        raise HTTPException(status_code=400, detail="Nome de arquivo vazio")
+
+    clean_name = re.sub(r"[^a-zA-Z0-9_.-]", "_", os.path.basename(file.filename))
+    upload_dir = os.path.join(DATA_DIR, "uploads")
+    os.makedirs(upload_dir, exist_ok=True)
+    local_path = os.path.join(upload_dir, clean_name)
+
+    content = await file.read()
+    with open(local_path, "wb") as f:
+        f.write(content)
+
+    scp_cmd = [
+        "scp", "-q", "-i", SSH_KEY,
+        "-o", "UserKnownHostsFile=/dev/null", "-o", "StrictHostKeyChecking=no",
+        local_path,
+        f"{TARGET_USER}@{TARGET_HOST}:/home/{TARGET_USER}/agy-inbox/{clean_name}",
+    ]
+    try:
+        proc = await asyncio.create_subprocess_exec(*scp_cmd)
+        await asyncio.wait_for(proc.wait(), timeout=20.0)
+        if proc.returncode != 0:
+            raise RuntimeError(f"SCP saiu com código {proc.returncode}")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Erro ao transferir arquivo para CachyCore: {str(e)}")
+
+    remote_path = f"/home/{TARGET_USER}/agy-inbox/{clean_name}"
+    return {
+        "ok": True,
+        "filename": clean_name,
+        "path": remote_path,
+        "size": len(content),
+    }
+
+
+@app.get("/api/outbox")
+async def list_outbox():
+    is_online = await asyncio.to_thread(check_target_online, TARGET_HOST, 22, 1.5)
+    if not is_online:
+        return {"files": []}
+
+    py_cmd = (
+        "python3 -c \"import os, json; d='/home/ai/agy-outbox'; "
+        "files = [{'name': f, 'size': os.path.getsize(os.path.join(d, f)), "
+        "'mtime': os.path.getmtime(os.path.join(d, f))} "
+        "for f in os.listdir(d) if not f.startswith('.') and os.path.isfile(os.path.join(d, f))]; "
+        "print(json.dumps(files))\""
+    )
+    stdout = await run_ssh_command(py_cmd, timeout=5.0)
+    if stdout:
+        try:
+            files = json.loads(stdout)
+            files.sort(key=lambda x: x.get("mtime", 0), reverse=True)
+            return {"files": files}
+        except Exception:
+            pass
+    return {"files": []}
+
+
+@app.get("/api/outbox/{filename}")
+async def download_outbox_file(filename: str):
+    clean_name = re.sub(r"[^a-zA-Z0-9_.-]", "_", os.path.basename(filename))
+    is_online = await asyncio.to_thread(check_target_online, TARGET_HOST, 22, 1.5)
+    if not is_online:
+        raise HTTPException(status_code=503, detail="CachyCore offline")
+
+    ssh_cmd = [
+        "ssh", "-i", SSH_KEY,
+        "-o", "UserKnownHostsFile=/dev/null", "-o", "StrictHostKeyChecking=no",
+        "-o", "BatchMode=yes",
+        f"{TARGET_USER}@{TARGET_HOST}",
+        f"cat {shlex.quote(f'/home/{TARGET_USER}/agy-outbox/{clean_name}')}",
+    ]
+    proc = await asyncio.create_subprocess_exec(
+        *ssh_cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL
+    )
+
+    async def file_stream():
+        while True:
+            chunk = await proc.stdout.read(64 * 1024)
+            if not chunk:
+                break
+            yield chunk
+        await proc.wait()
+
+    mime_type, _ = mimetypes.guess_type(clean_name)
+    headers = {
+        "Content-Disposition": f'attachment; filename="{clean_name}"',
+    }
+    return StreamingResponse(
+        file_stream(),
+        media_type=mime_type or "application/octet-stream",
+        headers=headers,
+    )
+
+
+@app.delete("/api/outbox/{filename}")
+async def delete_outbox_file(filename: str):
+    clean_name = re.sub(r"[^a-zA-Z0-9_.-]", "_", os.path.basename(filename))
+    cmd = f"rm -f {shlex.quote(f'/home/{TARGET_USER}/agy-outbox/{clean_name}')}"
+    await run_ssh_command(cmd, timeout=3.0)
+    return {"ok": True}
