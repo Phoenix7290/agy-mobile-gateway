@@ -6,6 +6,7 @@ import shlex
 import socket
 import asyncio
 import mimetypes
+from datetime import datetime, timezone
 from typing import Optional, List, Dict, Any
 from fastapi import FastAPI, HTTPException, Header, Query, UploadFile, File, WebSocket, WebSocketDisconnect
 from fastapi.responses import HTMLResponse, StreamingResponse, FileResponse
@@ -30,6 +31,37 @@ DB_PATH = os.path.join(DATA_DIR, "gateway.db")
 db = GatewayDB(DB_PATH)
 JOB_NOTIFIERS: Dict[str, asyncio.Condition] = {}
 RUNNING_TASKS: Dict[str, asyncio.Task] = {}
+
+WATCHDOG_STATE: Dict[str, Any] = {
+    "online": None,
+    "last_checked": None,
+    "last_seen_online": None,
+    "uptime_checks": 0,
+    "downtime_events": 0,
+}
+
+
+async def _watchdog_loop() -> None:
+    while True:
+        try:
+            is_online = await asyncio.to_thread(check_target_online, TARGET_HOST, 22, 1.5)
+            now_iso = datetime.now(timezone.utc).isoformat()
+            prev = WATCHDOG_STATE["online"]
+            WATCHDOG_STATE["online"] = is_online
+            WATCHDOG_STATE["last_checked"] = now_iso
+            WATCHDOG_STATE["uptime_checks"] += 1
+            if is_online:
+                WATCHDOG_STATE["last_seen_online"] = now_iso
+            elif prev is True and not is_online:
+                WATCHDOG_STATE["downtime_events"] += 1
+        except Exception:
+            pass
+        await asyncio.sleep(60)
+
+
+@app.on_event("startup")
+async def on_startup() -> None:
+    asyncio.create_task(_watchdog_loop())
 
 if os.path.exists(os.path.join(DIST_DIR, "assets")):
     app.mount("/assets", StaticFiles(directory=os.path.join(DIST_DIR, "assets")), name="assets")
@@ -258,6 +290,32 @@ async def _run_agy_job(
                         emitted_any = True
                         await _emit_event(job_id, "delta", {"type": "delta", "text": delta})
 
+            elif event_type == "command_result":
+                cmd = data.get("command", {})
+                cmd_name = cmd.get("name", "")
+                cmd_data = cmd.get("data", {})
+                if cmd_name == "usage" and isinstance(cmd_data, dict):
+                    lines = ["### Cota de Modelos AGY\n", "| Grupo | Janela | Restante | Reset |", "| :--- | :--- | :--- | :--- |"]
+                    for grp in cmd_data.get("groups", []):
+                        g_name = grp.get("name", "-")
+                        for b in grp.get("buckets", []):
+                            pct = round((b.get("remaining_fraction", 0) or 0) * 100)
+                            win = b.get("window", "-")
+                            rst = b.get("reset_time", "")
+                            if rst:
+                                rst = rst.replace("T", " ").replace("Z", " UTC")
+                            lines.append(f"| {g_name} | {win} | **{pct}%** | `{rst}` |")
+                    md_table = "\n".join(lines)
+                    emitted_any = True
+                    await _emit_event(job_id, "delta", {"type": "delta", "text": md_table})
+                elif cmd_name == "compact":
+                    emitted_any = True
+                    await _emit_event(
+                        job_id,
+                        "delta",
+                        {"type": "delta", "text": "**Contexto compactado (`/compact`) com sucesso.** O histórico foi resumido para economizar tokens."},
+                    )
+
             elif event_type == "result":
                 res = data.get("result", {})
                 current_conv_id = res.get("conversation_id", current_conv_id)
@@ -432,6 +490,26 @@ async def get_status():
         "target_host": TARGET_HOST,
         "wol_mac": WOL_MAC,
         "target_user": TARGET_USER,
+    }
+
+
+@app.get("/api/watchdog")
+async def get_watchdog():
+    return WATCHDOG_STATE
+
+
+@app.get("/api/features")
+async def get_features():
+    return {
+        "version": app.version,
+        "features": {
+            "terminal": os.getenv("FEATURE_TERMINAL", "true").lower() == "true",
+            "inbox_outbox": True,
+            "ollama": os.getenv("FEATURE_OLLAMA", "true").lower() == "true",
+            "watchdog": True,
+            "fts5_search": True,
+            "slash_commands": ["/compact", "/usage", "/plan", "/clear", "/status"],
+        },
     }
 
 

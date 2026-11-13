@@ -8,10 +8,12 @@
   import {
     createJob,
     fetchConversation,
+    fetchFeatures,
     fetchModels,
     fetchOutbox,
     fetchSettings,
     fetchStatus,
+    fetchWatchdog,
     triggerWol,
     uploadFile,
     type ChatMessage,
@@ -57,9 +59,52 @@
   let outboxOpen = $state(false);
   let outboxFiles = $state<OutboxFile[]>([]);
 
-  // Voice Dictation
+  // Voice Dictation & Slash Commands
   let isListening = $state(false);
   let recognition = $state<any>(null);
+  let slashMenuOpen = $state(false);
+
+  const slashCommands = [
+    { cmd: '/usage', desc: 'Cota restante de tokens/modelos' },
+    { cmd: '/compact', desc: 'Compactar histórico da sessão' },
+    { cmd: '/plan', desc: 'Ativar modo Planejamento (Leitura)' },
+    { cmd: '/clear', desc: 'Limpar e iniciar nova conversa' },
+    { cmd: '/status', desc: 'Status do Watchdog & recursos' },
+  ];
+
+  async function runSlashCommand(cmd: string) {
+    slashMenuOpen = false;
+    userInput = '';
+    if (cmd === '/clear') {
+      newConversation();
+      return;
+    }
+    if (cmd === '/plan') {
+      permissionMode = 'readonly';
+      messages = [...messages, { role: 'agent', content: '**Modo Planejamento (`readonly`) ativado.** Nenhuma alteração será aplicada sem revisão.' }];
+      scrollToBottom();
+      return;
+    }
+    if (cmd === '/status') {
+      const [wd, feat] = await Promise.all([fetchWatchdog(), fetchFeatures()]);
+      const summary = [
+        `### Status do Gateway (v${feat.version})`,
+        `- **CachyCore:** ${wd.online ? 'Online' : 'Offline'}`,
+        `- **Verificações Watchdog:** ${wd.uptime_checks} (Quedas: ${wd.downtime_events})`,
+        `- **Recursos:** ${Object.entries(feat.features).filter(([, v]) => v === true).map(([k]) => `\`${k}\``).join(', ')}`,
+      ].join('\n');
+      messages = [...messages, { role: 'agent', content: summary }];
+      scrollToBottom();
+      return;
+    }
+    if (cmd === '/compact' && !conversationId) {
+      messages = [...messages, { role: 'agent', content: '> Não há conversa ativa para compactar. Envie uma mensagem ou carregue uma sessão primeiro.' }];
+      scrollToBottom();
+      return;
+    }
+    userInput = cmd;
+    await handleSubmit();
+  }
 
   // DOM Refs
   let chatContainer: HTMLElement | undefined = $state();
@@ -554,8 +599,33 @@
       </div>
     {/if}
 
+    <!-- Slash Commands Palette -->
+    {#if slashMenuOpen || userInput.startsWith('/')}
+      <div class="bg-zinc-950 border border-zinc-800 rounded-xl p-1.5 space-y-1 max-h-48 overflow-y-auto">
+        {#each slashCommands.filter((c) => !userInput.startsWith('/') || c.cmd.startsWith(userInput.trim().toLowerCase())) as item}
+          <button
+            type="button"
+            onclick={() => runSlashCommand(item.cmd)}
+            class="w-full text-left px-2.5 py-1.5 rounded-lg hover:bg-zinc-800/80 flex items-center justify-between gap-2 text-xs"
+          >
+            <span class="font-mono font-semibold text-sky-400">{item.cmd}</span>
+            <span class="text-zinc-400 text-[11px] truncate">{item.desc}</span>
+          </button>
+        {/each}
+      </div>
+    {/if}
+
     <!-- Main Form -->
     <form onsubmit={handleSubmit} class="flex items-end gap-1.5">
+      <button
+        type="button"
+        onclick={() => (slashMenuOpen = !slashMenuOpen)}
+        class="px-2.5 py-2.5 rounded-xl text-xs font-mono font-bold shrink-0 transition-colors {slashMenuOpen ? 'bg-sky-600 text-white' : 'bg-zinc-800 text-sky-400 hover:bg-zinc-700'}"
+        title="Comandos Slash (/)"
+      >
+        /
+      </button>
+
       <input
         bind:this={fileInputEl}
         type="file"

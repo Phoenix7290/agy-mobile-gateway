@@ -33,8 +33,26 @@ export interface OutboxFile {
   mtime: number;
 }
 
+export interface WatchdogState {
+  online: boolean | null;
+  last_checked: string | null;
+  last_seen_online: string | null;
+  uptime_checks: number;
+  downtime_events: number;
+}
+
 export async function fetchStatus(): Promise<{ online: boolean; target_host: string; target_user: string }> {
   const res = await fetch('/api/status');
+  return res.json();
+}
+
+export async function fetchWatchdog(): Promise<WatchdogState> {
+  const res = await fetch('/api/watchdog');
+  return res.json();
+}
+
+export async function fetchFeatures(): Promise<{ version: string; features: Record<string, any> }> {
+  const res = await fetch('/api/features');
   return res.json();
 }
 

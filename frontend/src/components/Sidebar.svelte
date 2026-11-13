@@ -3,11 +3,13 @@
   import {
     deleteConversation,
     fetchConversations,
+    fetchWatchdog,
     updateSettings,
     type ConversationSummary,
     type GatewaySettings,
     type ModelInfo,
     type PermissionMode,
+    type WatchdogState,
   } from '../lib/api';
 
   let {
@@ -36,6 +38,7 @@
   let offset = $state(0);
   let savingSettings = $state(false);
   let settingsSavedMsg = $state('');
+  let watchdog = $state<WatchdogState | null>(null);
 
   const PAGE_SIZE = 30;
 
@@ -85,6 +88,8 @@
   $effect(() => {
     if (open && activeTab === 'chats') {
       load(true);
+    } else if (open && activeTab === 'settings') {
+      fetchWatchdog().then((w) => (watchdog = w)).catch(() => {});
     }
   });
 
@@ -265,12 +270,32 @@
           </div>
         {/if}
 
-        <div class="pt-2 border-t border-zinc-800 text-[11px] text-zinc-500 space-y-1">
+        <div class="pt-2 border-t border-zinc-800 text-[11px] text-zinc-500 space-y-1.5">
           <p>As configurações ficam salvas no banco SQLite do Gateway no Raspberry Pi e sincronizam automaticamente entre sessões.</p>
           {#if savingSettings}
             <p class="text-sky-400">Salvando...</p>
           {/if}
         </div>
+
+        {#if watchdog}
+          <div class="p-3 rounded-xl bg-zinc-950 border border-zinc-800 space-y-1.5">
+            <div class="flex items-center justify-between text-xs font-semibold text-zinc-200">
+              <span>Watchdog CachyCore (Pi)</span>
+              <span class="px-1.5 py-0.5 rounded text-[10px] {watchdog.online ? 'bg-emerald-950 text-emerald-300 border border-emerald-700/50' : 'bg-rose-950 text-rose-300 border border-rose-700/50'}">
+                {watchdog.online ? 'Online' : 'Offline'}
+              </span>
+            </div>
+            <div class="text-[11px] text-zinc-500 flex justify-between">
+              <span>Verificações: {watchdog.uptime_checks}</span>
+              <span>Quedas: {watchdog.downtime_events}</span>
+            </div>
+            {#if watchdog.last_seen_online}
+              <div class="text-[10px] text-zinc-500">
+                Visto por último: {new Date(watchdog.last_seen_online).toLocaleTimeString('pt-BR')}
+              </div>
+            {/if}
+          </div>
+        {/if}
       </div>
     {/if}
   </aside>
