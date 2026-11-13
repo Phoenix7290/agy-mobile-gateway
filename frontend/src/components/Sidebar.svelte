@@ -16,6 +16,7 @@
     open = $bindable(false),
     activeConvId,
     models,
+    watchdogEnabled = true,
     settings = $bindable<GatewaySettings>(),
     onSelectConversation,
     onNewConversation,
@@ -24,6 +25,7 @@
     open: boolean;
     activeConvId: string | null;
     models: ModelInfo[];
+    watchdogEnabled?: boolean;
     settings: GatewaySettings;
     onSelectConversation: (id: string) => void;
     onNewConversation: () => void;
@@ -88,7 +90,7 @@
   $effect(() => {
     if (open && activeTab === 'chats') {
       load(true);
-    } else if (open && activeTab === 'settings') {
+    } else if (open && activeTab === 'settings' && watchdogEnabled) {
       fetchWatchdog().then((w) => (watchdog = w)).catch(() => {});
     }
   });
@@ -277,7 +279,7 @@
           {/if}
         </div>
 
-        {#if watchdog}
+        {#if watchdogEnabled && watchdog}
           <div class="p-3 rounded-xl bg-zinc-950 border border-zinc-800 space-y-1.5">
             <div class="flex items-center justify-between text-xs font-semibold text-zinc-200">
               <span>Watchdog CachyCore (Pi)</span>

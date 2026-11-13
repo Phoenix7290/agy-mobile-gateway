@@ -25,6 +25,14 @@
 
   // State
   let targetOnline = $state<boolean | null>(null);
+  let gatewayMode = $state<'gateway' | 'standalone'>('gateway');
+  let features = $state<Record<string, any>>({
+    terminal: true,
+    wol: true,
+    watchdog: true,
+    ollama: true,
+    inbox_outbox: true,
+  });
   let models = $state<ModelInfo[]>([
     { id: 'gemini-4-hydrogen-high', name: 'Gemini 4 Hydrogen (High)', type: 'cloud', badge: 'Hydrogen' },
     { id: 'gemini-4-hydrogen-xhigh', name: 'Gemini 4 Hydrogen (Extra)', type: 'cloud', badge: 'Extra' },
@@ -420,15 +428,22 @@
       };
     }
 
-    // Load settings, models, status, outbox in parallel
-    const [loadedSettings, loadedModels] = await Promise.all([
+    // Load settings, models, features, status, outbox in parallel
+    const [loadedSettings, loadedModels, loadedFeatures] = await Promise.all([
       fetchSettings().catch(() => settings),
       fetchModels().catch(() => models),
+      fetchFeatures().catch(() => null),
       refreshStatusAndOutbox(),
     ]);
 
     settings = loadedSettings;
     if (loadedModels.length > 0) models = loadedModels;
+    if (loadedFeatures?.features) {
+      features = loadedFeatures.features;
+      if ((loadedFeatures as any).mode) {
+        gatewayMode = (loadedFeatures as any).mode;
+      }
+    }
 
     selectedModel = loadedSettings.default_model || 'gemini-4-hydrogen-high';
     permissionMode = loadedSettings.default_permission_mode || 'copilot';
@@ -468,8 +483,8 @@
 
       <div class="flex items-center gap-1.5 min-w-0">
         <span class="w-2 h-2 rounded-full shrink-0 {targetOnline === true ? 'bg-emerald-500' : targetOnline === false ? 'bg-rose-500' : 'bg-amber-500'}"></span>
-        <span class="text-xs font-bold tracking-tight truncate">CachyCore</span>
-        {#if targetOnline === false}
+        <span class="text-xs font-bold tracking-tight truncate">{gatewayMode === 'standalone' ? 'AGY Local' : 'CachyCore'}</span>
+        {#if targetOnline === false && features.wol}
           <button
             type="button"
             onclick={handleWakeOnLan}
@@ -497,14 +512,16 @@
         {/if}
       </button>
 
-      <button
-        type="button"
-        onclick={() => (terminalOpen = true)}
-        class="p-2 rounded-xl bg-zinc-800/80 text-zinc-300 hover:text-emerald-400"
-        title="Terminal HITL"
-      >
-        <Icon name="terminal" size={18} />
-      </button>
+      {#if features.terminal}
+        <button
+          type="button"
+          onclick={() => (terminalOpen = true)}
+          class="p-2 rounded-xl bg-zinc-800/80 text-zinc-300 hover:text-emerald-400"
+          title="Terminal HITL"
+        >
+          <Icon name="terminal" size={18} />
+        </button>
+      {/if}
 
       <button
         type="button"
@@ -695,6 +712,7 @@
   bind:open={sidebarOpen}
   activeConvId={conversationId}
   {models}
+  watchdogEnabled={features.watchdog !== false}
   bind:settings={settings}
   onSelectConversation={loadConversation}
   onNewConversation={newConversation}

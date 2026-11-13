@@ -16,16 +16,21 @@ import wakeonlan
 import websockets
 
 from db import GatewayDB
+from config import load_config
+from runners import create_runner
 
-app = FastAPI(title="AGY Mobile Gateway", version="3.2.0")
+cfg = load_config()
+runner = create_runner(cfg)
 
-TARGET_HOST = os.getenv("TARGET_HOST", "192.168.1.190")
-TARGET_USER = os.getenv("TARGET_USER", "ai")
-WOL_MAC = os.getenv("WOL_MAC", "bc:fc:e7:ca:84:05")
-SSH_KEY = os.getenv("SSH_KEY", "/root/.ssh/id_ed25519")
+app = FastAPI(title="AGY Mobile Gateway", version="3.3.0")
+
+TARGET_HOST = cfg.target_host
+TARGET_USER = cfg.target_user
+WOL_MAC = cfg.wol_mac
+SSH_KEY = cfg.ssh_key
 STATIC_DIR = os.path.join(os.path.dirname(__file__), "static")
 DIST_DIR = os.path.join(STATIC_DIR, "dist")
-DATA_DIR = os.getenv("DATA_DIR", "/data")
+DATA_DIR = cfg.dirs.data_dir
 DB_PATH = os.path.join(DATA_DIR, "gateway.db")
 
 db = GatewayDB(DB_PATH)
@@ -44,7 +49,7 @@ WATCHDOG_STATE: Dict[str, Any] = {
 async def _watchdog_loop() -> None:
     while True:
         try:
-            is_online = await asyncio.to_thread(check_target_online, TARGET_HOST, 22, 1.5)
+            is_online = await runner.check_online(timeout=1.5)
             now_iso = datetime.now(timezone.utc).isoformat()
             prev = WATCHDOG_STATE["online"]
             WATCHDOG_STATE["online"] = is_online
@@ -61,7 +66,8 @@ async def _watchdog_loop() -> None:
 
 @app.on_event("startup")
 async def on_startup() -> None:
-    asyncio.create_task(_watchdog_loop())
+    if cfg.mods.get("watchdog"):
+        asyncio.create_task(_watchdog_loop())
 
 if os.path.exists(os.path.join(DIST_DIR, "assets")):
     app.mount("/assets", StaticFiles(directory=os.path.join(DIST_DIR, "assets")), name="assets")
@@ -155,19 +161,9 @@ async def _run_ollama_job(job_id: str, conv_id: str, prompt: str, selected_model
         "stream": True,
     })
 
-    cmd = [
-        "ssh", "-i", SSH_KEY,
-        "-o", "UserKnownHostsFile=/dev/null", "-o", "StrictHostKeyChecking=no",
-        "-o", "BatchMode=yes", "-o", "ConnectTimeout=5",
-        f"{TARGET_USER}@{TARGET_HOST}",
-        f"curl -s -N -X POST http://127.0.0.1:11434/api/chat -d {shlex.quote(payload_json)}",
-    ]
-
     accumulated = ""
     try:
-        proc = await asyncio.create_subprocess_exec(
-            *cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
-        )
+        proc = await runner.start_ollama_chat(payload_json)
         while True:
             line = await proc.stdout.readline()  # type: ignore
             if not line:
@@ -219,29 +215,19 @@ async def _run_agy_job(
     selected_model: str,
     permission_mode: str,
 ) -> None:
-    perm_flags = " ".join(PERMISSION_MODES.get(permission_mode, PERMISSION_MODES["copilot"]))
-    agy_cmd = f"agy -p {shlex.quote(prompt)} --output-format stream-json {perm_flags}"
+    perm_flags = PERMISSION_MODES.get(permission_mode, PERMISSION_MODES["copilot"])
+    agy_args = ["agy", "-p", prompt, "--output-format", "stream-json", *perm_flags]
     if conversation_id:
-        agy_cmd += f" --conversation {shlex.quote(conversation_id)}"
+        agy_args.extend(["--conversation", conversation_id])
     if selected_model:
-        agy_cmd += f" --model {shlex.quote(selected_model)}"
-
-    ssh_cmd = [
-        "ssh", "-i", SSH_KEY,
-        "-o", "UserKnownHostsFile=/dev/null", "-o", "StrictHostKeyChecking=no",
-        "-o", "BatchMode=yes", "-o", "ConnectTimeout=5",
-        f"{TARGET_USER}@{TARGET_HOST}",
-        agy_cmd,
-    ]
+        agy_args.extend(["--model", selected_model])
 
     current_conv_id = conversation_id
     emitted_any = False
     executed_tools: List[str] = []
 
     try:
-        proc = await asyncio.create_subprocess_exec(
-            *ssh_cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
-        )
+        proc = await runner.start_agy_process(agy_args)
         while True:
             line = await proc.stdout.readline()  # type: ignore
             if not line:
@@ -484,11 +470,12 @@ async def terminal_ws_proxy(websocket: WebSocket):
 
 @app.get("/api/status")
 async def get_status():
-    is_online = await asyncio.to_thread(check_target_online, TARGET_HOST, 22, 1.5)
+    is_online = await runner.check_online(timeout=1.5)
     return {
         "online": is_online,
+        "mode": cfg.mode,
         "target_host": TARGET_HOST,
-        "wol_mac": WOL_MAC,
+        "wol_mac": WOL_MAC if cfg.mods.get("wol") else None,
         "target_user": TARGET_USER,
     }
 
@@ -502,19 +489,19 @@ async def get_watchdog():
 async def get_features():
     return {
         "version": app.version,
-        "features": {
-            "terminal": os.getenv("FEATURE_TERMINAL", "true").lower() == "true",
-            "inbox_outbox": True,
-            "ollama": os.getenv("FEATURE_OLLAMA", "true").lower() == "true",
-            "watchdog": True,
-            "fts5_search": True,
-            "slash_commands": ["/compact", "/usage", "/plan", "/clear", "/status"],
+        "mode": cfg.mode,
+        "dirs": {
+            "inbox": cfg.dirs.inbox_dir,
+            "outbox": cfg.dirs.outbox_dir,
         },
+        "features": cfg.mods,
     }
 
 
 @app.post("/api/wol")
 async def trigger_wol(req: Optional[WolRequest] = None):
+    if not cfg.mods.get("wol"):
+        raise HTTPException(status_code=400, detail="Wake-on-LAN não habilitado neste perfil")
     mac_to_wake = (req and req.mac) or WOL_MAC
     try:
         wakeonlan.send_magic_packet(mac_to_wake)
@@ -526,23 +513,8 @@ async def trigger_wol(req: Optional[WolRequest] = None):
 @app.get("/api/models")
 async def get_models():
     models = list(DEFAULT_AGY_MODELS)
-    is_online = await asyncio.to_thread(check_target_online, TARGET_HOST, 22, 1.0)
-    if is_online:
-        stdout = await run_ssh_command("curl -s --max-time 2 http://127.0.0.1:11434/api/tags", timeout=3.0)
-        if stdout:
-            try:
-                tags_data = json.loads(stdout)
-                for m in tags_data.get("models", []):
-                    m_name = m.get("name")
-                    if m_name and not m_name.startswith("nomic"):
-                        models.append({
-                            "id": f"ollama:{m_name}",
-                            "name": f"Local: {m_name}",
-                            "type": "local",
-                            "badge": "Ollama / GPU",
-                        })
-            except Exception:
-                pass
+    if cfg.mods.get("ollama") and await runner.check_online(timeout=1.0):
+        models.extend(await runner.list_ollama_models())
     return {"models": models}
 
 
@@ -554,18 +526,11 @@ async def list_conversations(
 ):
     merged: List[Dict[str, Any]] = []
 
-    is_online = await asyncio.to_thread(check_target_online, TARGET_HOST, 22, 1.5)
-    if is_online:
-        stdout = await run_ssh_command("python3 /home/ai/bin/agy-gateway-sync.py list 100", timeout=6.0)
-        if stdout:
-            try:
-                data = json.loads(stdout)
-                for c in data.get("conversations", []):
-                    c["engine"] = "agy"
-                    merged.append(c)
-                    db.upsert_fts(c.get("id", ""), c.get("title", ""), c.get("preview", "") or c.get("title", ""))
-            except Exception:
-                pass
+    if await runner.check_online(timeout=1.5):
+        for c in await runner.list_agy_conversations(100):
+            c["engine"] = "agy"
+            merged.append(c)
+            db.upsert_fts(c.get("id", ""), c.get("title", ""), c.get("preview", "") or c.get("title", ""))
 
     merged.extend(db.list_local_conversations())
     merged.sort(key=lambda c: c.get("updated_at") or "", reverse=True)
@@ -594,20 +559,14 @@ async def get_conversation(conv_id: str):
         local_conv["active_job_id"] = matching[0] if matching else None
         return local_conv
 
-    is_online = await asyncio.to_thread(check_target_online, TARGET_HOST, 22, 1.5)
-    if is_online:
-        stdout = await run_ssh_command(f"python3 /home/ai/bin/agy-gateway-sync.py get {shlex.quote(conv_id)}", timeout=5.0)
-        if stdout:
-            try:
-                data = json.loads(stdout)
-                if "messages" in data:
-                    data["engine"] = "agy"
-                    active_jobs = db.get_active_jobs()
-                    matching = [j["id"] for j in active_jobs if j.get("conversation_id") == conv_id]
-                    data["active_job_id"] = matching[0] if matching else None
-                    return data
-            except Exception:
-                pass
+    if await runner.check_online(timeout=1.5):
+        data = await runner.get_agy_conversation(conv_id)
+        if data:
+            data["engine"] = "agy"
+            active_jobs = db.get_active_jobs()
+            matching = [j["id"] for j in active_jobs if j.get("conversation_id") == conv_id]
+            data["active_job_id"] = matching[0] if matching else None
+            return data
 
     raise HTTPException(status_code=404, detail="Conversa não encontrada")
 
@@ -743,7 +702,7 @@ async def upload_file(file: UploadFile = File(...)):
         raise HTTPException(status_code=400, detail="Nome de arquivo vazio")
 
     clean_name = re.sub(r"[^a-zA-Z0-9_.-]", "_", os.path.basename(file.filename))
-    upload_dir = os.path.join(DATA_DIR, "uploads")
+    upload_dir = os.path.join(cfg.dirs.cache_dir, "uploads")
     os.makedirs(upload_dir, exist_ok=True)
     local_path = os.path.join(upload_dir, clean_name)
 
@@ -751,85 +710,41 @@ async def upload_file(file: UploadFile = File(...)):
     with open(local_path, "wb") as f:
         f.write(content)
 
-    scp_cmd = [
-        "scp", "-q", "-i", SSH_KEY,
-        "-o", "UserKnownHostsFile=/dev/null", "-o", "StrictHostKeyChecking=no",
-        local_path,
-        f"{TARGET_USER}@{TARGET_HOST}:/home/{TARGET_USER}/agy-inbox/{clean_name}",
-    ]
     try:
-        proc = await asyncio.create_subprocess_exec(*scp_cmd)
-        await asyncio.wait_for(proc.wait(), timeout=20.0)
-        if proc.returncode != 0:
-            raise RuntimeError(f"SCP saiu com código {proc.returncode}")
+        dest_path = await runner.save_to_inbox(local_path, clean_name)
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Erro ao transferir arquivo para CachyCore: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Erro ao salvar arquivo no inbox: {str(e)}")
 
-    remote_path = f"/home/{TARGET_USER}/agy-inbox/{clean_name}"
     return {
         "ok": True,
         "filename": clean_name,
-        "path": remote_path,
+        "path": dest_path,
         "size": len(content),
     }
 
 
 @app.get("/api/outbox")
 async def list_outbox():
-    is_online = await asyncio.to_thread(check_target_online, TARGET_HOST, 22, 1.5)
-    if not is_online:
+    if not await runner.check_online(timeout=1.5):
         return {"files": []}
-
-    py_cmd = (
-        "python3 -c \"import os, json; d='/home/ai/agy-outbox'; "
-        "files = [{'name': f, 'size': os.path.getsize(os.path.join(d, f)), "
-        "'mtime': os.path.getmtime(os.path.join(d, f))} "
-        "for f in os.listdir(d) if not f.startswith('.') and os.path.isfile(os.path.join(d, f))]; "
-        "print(json.dumps(files))\""
-    )
-    stdout = await run_ssh_command(py_cmd, timeout=5.0)
-    if stdout:
-        try:
-            files = json.loads(stdout)
-            files.sort(key=lambda x: x.get("mtime", 0), reverse=True)
-            return {"files": files}
-        except Exception:
-            pass
-    return {"files": []}
+    try:
+        files = await runner.list_outbox()
+        files.sort(key=lambda x: x.get("mtime", 0), reverse=True)
+        return {"files": files}
+    except Exception:
+        return {"files": []}
 
 
 @app.get("/api/outbox/{filename}")
 async def download_outbox_file(filename: str):
     clean_name = re.sub(r"[^a-zA-Z0-9_.-]", "_", os.path.basename(filename))
-    is_online = await asyncio.to_thread(check_target_online, TARGET_HOST, 22, 1.5)
-    if not is_online:
-        raise HTTPException(status_code=503, detail="CachyCore offline")
-
-    ssh_cmd = [
-        "ssh", "-i", SSH_KEY,
-        "-o", "UserKnownHostsFile=/dev/null", "-o", "StrictHostKeyChecking=no",
-        "-o", "BatchMode=yes",
-        f"{TARGET_USER}@{TARGET_HOST}",
-        f"cat {shlex.quote(f'/home/{TARGET_USER}/agy-outbox/{clean_name}')}",
-    ]
-    proc = await asyncio.create_subprocess_exec(
-        *ssh_cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL
-    )
-
-    async def file_stream():
-        while True:
-            chunk = await proc.stdout.read(64 * 1024)
-            if not chunk:
-                break
-            yield chunk
-        await proc.wait()
+    if not await runner.check_online(timeout=1.5):
+        raise HTTPException(status_code=503, detail="Host offline")
 
     mime_type, _ = mimetypes.guess_type(clean_name)
-    headers = {
-        "Content-Disposition": f'attachment; filename="{clean_name}"',
-    }
+    headers = {"Content-Disposition": f'attachment; filename="{clean_name}"'}
     return StreamingResponse(
-        file_stream(),
+        runner.stream_outbox_file(clean_name),
         media_type=mime_type or "application/octet-stream",
         headers=headers,
     )
@@ -838,6 +753,5 @@ async def download_outbox_file(filename: str):
 @app.delete("/api/outbox/{filename}")
 async def delete_outbox_file(filename: str):
     clean_name = re.sub(r"[^a-zA-Z0-9_.-]", "_", os.path.basename(filename))
-    cmd = f"rm -f {shlex.quote(f'/home/{TARGET_USER}/agy-outbox/{clean_name}')}"
-    await run_ssh_command(cmd, timeout=3.0)
+    await runner.delete_outbox_file(clean_name)
     return {"ok": True}
