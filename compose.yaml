@@ -16,8 +16,11 @@ services:
       - PORT=${PORT:-8088}
 
   agy-ttyd:
-    image: tsl0922/ttyd:latest
+    build:
+      context: .
+      dockerfile: Dockerfile.ttyd
+    image: agy-ttyd:custom
     container_name: agy-ttyd
     restart: unless-stopped
     network_mode: host
-    command: ["ttyd", "-p", "7681", "-W", "-t", "fontSize=14", "ssh", "-o", "StrictHostKeyChecking=accept-new", "ryanslx@192.168.1.190"]
+    command: ["ttyd", "-p", "7681", "-b", "/terminal", "-W", "-t", "fontSize=14", "ssh", "-o", "StrictHostKeyChecking=accept-new", "ryanslx@192.168.1.190"]

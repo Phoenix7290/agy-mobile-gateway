@@ -250,12 +250,19 @@
     const liveStatusTimer = document.getElementById('live-status-timer');
 
     // Terminal Management
+    function getTerminalUrl(bustCache = false) {
+      const base = window.location.port !== ''
+        ? `${window.location.protocol}//${window.location.hostname}:7681/terminal`
+        : `${window.location.origin}/terminal`;
+      return bustCache ? `${base}?r=${Date.now()}` : base;
+    }
+
     function toggleTerminal() {
       terminalOpen = !terminalOpen;
       if (terminalOpen) {
         terminalModal.classList.remove('hidden');
         if (!terminalFrame.src || terminalFrame.src === 'about:blank') {
-          terminalFrame.src = `${window.location.protocol}//${window.location.hostname}:7681`;
+          terminalFrame.src = getTerminalUrl(false);
         }
       } else {
         terminalModal.classList.add('hidden');
@@ -263,7 +270,7 @@
     }
 
     function reloadTerminal() {
-      terminalFrame.src = `${window.location.protocol}//${window.location.hostname}:7681?r=${Date.now()}`;
+      terminalFrame.src = getTerminalUrl(true);
     }
 
     // Drawer Management
