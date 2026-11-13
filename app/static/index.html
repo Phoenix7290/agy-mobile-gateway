@@ -26,10 +26,20 @@
     }
   </script>
   <style>
+    html, body {
+      overflow-x: hidden;
+      max-width: 100vw;
+      width: 100%;
+    }
     body {
       padding-top: env(safe-area-inset-top);
       padding-bottom: env(safe-area-inset-bottom);
       -webkit-touch-callout: default;
+    }
+    .markdown-body {
+      overflow-wrap: anywhere;
+      word-break: break-word;
+      min-width: 0;
     }
     .markdown-body, .markdown-body * {
       -webkit-user-select: text !important;
@@ -40,6 +50,7 @@
       border-radius: 0.5rem;
       padding: 0.85rem;
       padding-top: 2rem;
+      max-width: 100%;
       overflow-x: auto;
       font-size: 0.825rem;
       margin-top: 0.5rem;
@@ -52,7 +63,7 @@
     }
     .markdown-body p { margin-bottom: 0.5rem; }
     .markdown-body ul, .markdown-body ol { margin-left: 1.25rem; margin-bottom: 0.5rem; list-style-type: disc; }
-    .markdown-body table { width: 100%; border-collapse: collapse; margin-bottom: 0.5rem; }
+    .markdown-body table { display: block; max-width: 100%; overflow-x: auto; border-collapse: collapse; margin-bottom: 0.5rem; }
     .markdown-body th, .markdown-body td { border: 1px solid #27272a; padding: 0.4rem 0.6rem; font-size: 0.8rem; }
     .markdown-body th { background-color: #18181b; }
     .typing-cursor::after {
@@ -188,12 +199,29 @@
     <span id="live-status-timer" class="text-[10px] text-zinc-500 ml-2 shrink-0">0s</span>
   </div>
 
-  <!-- Quick Action Chips -->
+  <!-- Quick Action Chips & Permission Mode -->
   <div class="px-3 py-1.5 bg-zinc-950/80 border-t border-zinc-800/40 flex items-center space-x-2 overflow-x-auto no-scrollbar shrink-0 select-none">
-    <button onclick="sendQuick('Qual o status atual do host CachyCore, recursos e uptime?')" class="text-[11px] whitespace-nowrap bg-zinc-900 hover:bg-zinc-800 text-zinc-300 border border-zinc-800 px-2.5 py-1 rounded-full active:scale-95 transition-all">🖥️ Status Host</button>
-    <button onclick="sendQuick('docker ps')" class="text-[11px] whitespace-nowrap bg-zinc-900 hover:bg-zinc-800 text-zinc-300 border border-zinc-800 px-2.5 py-1 rounded-full active:scale-95 transition-all">🐳 Docker PS</button>
-    <button onclick="sendQuick('git status')" class="text-[11px] whitespace-nowrap bg-zinc-900 hover:bg-zinc-800 text-zinc-300 border border-zinc-800 px-2.5 py-1 rounded-full active:scale-95 transition-all">🌿 Git Status</button>
-    <button onclick="sendQuick('Verifique o uso de VRAM e modelos do Ollama via resource-saver status')" class="text-[11px] whitespace-nowrap bg-zinc-900 hover:bg-zinc-800 text-zinc-300 border border-zinc-800 px-2.5 py-1 rounded-full active:scale-95 transition-all">⚡ VRAM / Ollama</button>
+    <select id="permission-select" onchange="changePermissionMode(this.value)" title="Modo de Permissão do Agente" class="text-[11px] font-medium bg-zinc-900 text-zinc-200 border border-zinc-700/80 rounded-full px-2.5 py-1 focus:outline-none focus:border-brand-500 shrink-0">
+      <option value="readonly">Modo: Leitura</option>
+      <option value="copilot">Modo: Copiloto</option>
+      <option value="autonomous">Modo: Autônomo</option>
+    </select>
+    <button onclick="sendQuick('Qual o status atual do host CachyCore, recursos e uptime?')" class="inline-flex items-center gap-1.5 text-[11px] whitespace-nowrap bg-zinc-900 hover:bg-zinc-800 text-zinc-300 border border-zinc-800 px-2.5 py-1 rounded-full active:scale-95 transition-all shrink-0">
+      <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.85" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="3" width="20" height="14" rx="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg>
+      <span>Status Host</span>
+    </button>
+    <button onclick="sendQuick('docker ps')" class="inline-flex items-center gap-1.5 text-[11px] whitespace-nowrap bg-zinc-900 hover:bg-zinc-800 text-zinc-300 border border-zinc-800 px-2.5 py-1 rounded-full active:scale-95 transition-all shrink-0">
+      <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.85" stroke-linecap="round" stroke-linejoin="round"><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"/></svg>
+      <span>Docker PS</span>
+    </button>
+    <button onclick="sendQuick('git status')" class="inline-flex items-center gap-1.5 text-[11px] whitespace-nowrap bg-zinc-900 hover:bg-zinc-800 text-zinc-300 border border-zinc-800 px-2.5 py-1 rounded-full active:scale-95 transition-all shrink-0">
+      <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.85" stroke-linecap="round" stroke-linejoin="round"><line x1="6" y1="3" x2="6" y2="15"/><circle cx="18" cy="6" r="3"/><circle cx="6" cy="18" r="3"/><path d="M18 9a9 9 0 0 1-9 9"/></svg>
+      <span>Git Status</span>
+    </button>
+    <button onclick="sendQuick('Verifique o uso de VRAM e modelos do Ollama via resource-saver status')" class="inline-flex items-center gap-1.5 text-[11px] whitespace-nowrap bg-zinc-900 hover:bg-zinc-800 text-zinc-300 border border-zinc-800 px-2.5 py-1 rounded-full active:scale-95 transition-all shrink-0">
+      <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.85" stroke-linecap="round" stroke-linejoin="round"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>
+      <span>VRAM / Ollama</span>
+    </button>
   </div>
 
   <!-- Bottom Input Bar -->
@@ -221,7 +249,13 @@
   <script>
     let currentConversationId = localStorage.getItem('agy_conv_id') || null;
     let selectedModel = localStorage.getItem('agy_model') || 'gemini-3.8-flash-high';
+    let selectedPermissionMode = localStorage.getItem('agy_perm_mode') || 'copilot';
     let isGenerating = false;
+    let activeJobId = localStorage.getItem('agy_active_job') || null;
+    let activeJobLastSeq = parseInt(localStorage.getItem('agy_active_seq') || '0', 10);
+    let activeStreamAbort = null;
+    let activeAgentBubble = null;
+    let activeAccumulatedText = '';
     let recognition = null;
     let isListening = false;
     let drawerOpen = false;
@@ -313,7 +347,10 @@
         const meta = document.createElement('p');
         meta.className = 'text-[10px] text-zinc-500 mt-0.5 flex items-center gap-1.5';
         const timeStr = conv.updated_at ? new Date(conv.updated_at).toLocaleDateString([], {day:'2-digit', month:'2-digit'}) + ' ' + new Date(conv.updated_at).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'}) : '';
-        meta.innerHTML = `<span>${conv.message_count || 0} msgs</span> • <span>${timeStr}</span>`;
+        const engineIcon = conv.engine === 'ollama'
+          ? '<svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.85" stroke-linecap="round" stroke-linejoin="round" class="text-emerald-400 shrink-0"><rect x="4" y="4" width="16" height="16" rx="2"/><rect x="9" y="9" width="6" height="6"/><line x1="9" y1="1" x2="9" y2="4"/><line x1="15" y1="1" x2="15" y2="4"/><line x1="9" y1="20" x2="9" y2="23"/><line x1="15" y1="20" x2="15" y2="23"/><line x1="20" y1="9" x2="23" y2="9"/><line x1="20" y1="14" x2="23" y2="14"/><line x1="1" y1="9" x2="4" y2="9"/><line x1="1" y1="14" x2="4" y2="14"/></svg>'
+          : '<svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.85" stroke-linecap="round" stroke-linejoin="round" class="text-brand-400 shrink-0"><path d="M17.5 19H9a7 7 0 1 1 6.71-9h1.79a4.5 4.5 0 1 1 0 9Z"/></svg>';
+        meta.innerHTML = `${engineIcon}<span>${conv.message_count || 0} msgs</span> • <span>${timeStr}</span>`;
 
         info.appendChild(title);
         info.appendChild(meta);
@@ -381,7 +418,7 @@
               document.execCommand('copy');
               ta.remove();
             }
-            btn.innerHTML = '<span class="text-emerald-400 font-bold">✓ Copiado!</span>';
+            btn.innerHTML = '<svg class="w-3 h-3 text-emerald-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><polyline stroke-linecap="round" stroke-linejoin="round" stroke-width="2" points="20 6 9 17 4 12"/></svg><span class="text-emerald-400 font-bold">Copiado</span>';
             setTimeout(() => {
               btn.innerHTML = '<svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z"/></svg><span>Copiar</span>';
             }, 2000);
@@ -569,12 +606,12 @@
       }
 
       const wrapper = document.createElement('div');
-      wrapper.className = role === 'user' ? 'flex justify-end' : 'flex justify-start';
+      wrapper.className = role === 'user' ? 'flex justify-end min-w-0' : 'flex justify-start min-w-0';
 
       const bubble = document.createElement('div');
       bubble.className = role === 'user'
-        ? 'max-w-[85%] rounded-2xl rounded-tr-sm bg-brand-600 text-white px-3.5 py-2.5 text-sm leading-relaxed shadow-sm'
-        : 'max-w-[92%] rounded-2xl rounded-tl-sm bg-zinc-900 border border-zinc-800/80 px-3.5 py-2.5 text-sm leading-relaxed shadow-sm text-zinc-100 markdown-body';
+        ? 'max-w-[85%] min-w-0 rounded-2xl rounded-tr-sm bg-brand-600 text-white px-3.5 py-2.5 text-sm leading-relaxed shadow-sm break-words'
+        : 'max-w-[92%] min-w-0 rounded-2xl rounded-tl-sm bg-zinc-900 border border-zinc-800/80 px-3.5 py-2.5 text-sm leading-relaxed shadow-sm text-zinc-100 markdown-body';
 
       if (role === 'user') {
         bubble.textContent = text;
@@ -609,6 +646,212 @@
       liveStatusBar.classList.add('hidden');
     }
 
+    function changePermissionMode(mode) {
+      selectedPermissionMode = mode;
+      localStorage.setItem('agy_perm_mode', mode);
+    }
+
+    const permSelect = document.getElementById('permission-select');
+    if (permSelect) permSelect.value = selectedPermissionMode;
+
+    function clearActiveJob() {
+      activeJobId = null;
+      activeJobLastSeq = 0;
+      localStorage.removeItem('agy_active_job');
+      localStorage.removeItem('agy_active_seq');
+      if (activeStreamAbort) {
+        activeStreamAbort.abort();
+        activeStreamAbort = null;
+      }
+      stopLiveStatus();
+      if (activeAgentBubble) {
+        activeAgentBubble.classList.remove('typing-cursor');
+        activeAgentBubble.innerHTML = marked.parse(activeAccumulatedText || '*(Sem resposta)*');
+        enhanceCodeBlocks(activeAgentBubble);
+        activeAgentBubble = null;
+      }
+      isGenerating = false;
+      btnSend.disabled = false;
+      sendIcon.classList.remove('hidden');
+      spinIcon.classList.add('hidden');
+      scrollToBottom();
+    }
+
+    async function streamJobEvents(jobId, afterSeq = 0) {
+      if (activeStreamAbort) {
+        activeStreamAbort.abort();
+      }
+      const controller = new AbortController();
+      activeStreamAbort = controller;
+
+      let jobFinished = false;
+
+      try {
+        const response = await fetch(`/api/jobs/${jobId}/events?after=${afterSeq}`, {
+          signal: controller.signal,
+          credentials: 'same-origin'
+        });
+
+        if (response.type === 'opaqueredirect' || response.status === 401 || response.status === 403 || (response.url && response.url.includes('cloudflareaccess.com'))) {
+          activeAccumulatedText += '\n\n> **Sessão expirada:** Recarregue a página para autenticar novamente no Cloudflare Access.';
+          if (activeAgentBubble) {
+            activeAgentBubble.innerHTML = marked.parse(activeAccumulatedText);
+          }
+          clearActiveJob();
+          return;
+        }
+
+        if (!response.ok) {
+          throw new Error(`HTTP ${response.status}`);
+        }
+
+        const reader = response.body.getReader();
+        const decoder = new TextDecoder('utf-8');
+        let buffer = '';
+        let currentEventId = afterSeq;
+
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+
+          buffer += decoder.decode(value, { stream: true });
+          const lines = buffer.split('\n');
+          buffer = lines.pop();
+
+          for (const line of lines) {
+            const trimmed = line.trim();
+            if (!trimmed || trimmed.startsWith(':')) continue;
+            if (trimmed.startsWith('id:')) {
+              const parsedId = parseInt(trimmed.slice(3).trim(), 10);
+              if (!Number.isNaN(parsedId)) {
+                currentEventId = parsedId;
+                activeJobLastSeq = parsedId;
+                localStorage.setItem('agy_active_seq', String(parsedId));
+              }
+              continue;
+            }
+            if (!trimmed.startsWith('data:')) continue;
+
+            const dataStr = trimmed.slice(5).trim();
+            if (dataStr === '[DONE]') {
+              jobFinished = true;
+              continue;
+            }
+
+            try {
+              const event = JSON.parse(dataStr);
+              if (event.type === 'init') {
+                if (event.conversation_id) {
+                  currentConversationId = event.conversation_id;
+                  localStorage.setItem('agy_conv_id', currentConversationId);
+                }
+              } else if (event.type === 'delta') {
+                activeAccumulatedText += event.text;
+                if (activeAgentBubble) {
+                  activeAgentBubble.innerHTML = marked.parse(activeAccumulatedText);
+                  enhanceCodeBlocks(activeAgentBubble);
+                }
+                liveStatusText.textContent = 'Digitando resposta...';
+                scrollToBottom();
+              } else if (event.type === 'tool') {
+                const toolName = event.name || 'ferramenta';
+                const preview = event.preview ? ` (${event.preview.slice(0, 32)}...)` : '';
+                if (event.state === 'ACTIVE') {
+                  liveStatusText.textContent = `Executando: ${toolName}${preview}`;
+                } else {
+                  liveStatusText.textContent = `Concluído: ${toolName}`;
+                }
+                scrollToBottom();
+              } else if (event.type === 'done') {
+                jobFinished = true;
+                if (event.conversation_id) {
+                  currentConversationId = event.conversation_id;
+                  localStorage.setItem('agy_conv_id', currentConversationId);
+                }
+              } else if (event.type === 'error') {
+                jobFinished = true;
+                activeAccumulatedText += `\n\n> **Erro:** ${event.error}`;
+                if (activeAgentBubble) {
+                  activeAgentBubble.innerHTML = marked.parse(activeAccumulatedText);
+                  enhanceCodeBlocks(activeAgentBubble);
+                }
+              }
+            } catch (err) {}
+          }
+        }
+      } catch (err) {
+        if (err.name === 'AbortError') {
+          return;
+        }
+        // Network drop (e.g. switched app): keep activeJobId so visibilitychange resumes cleanly
+        if (document.visibilityState === 'visible' && activeJobId === jobId) {
+          liveStatusText.textContent = 'Reconectando ao stream...';
+          setTimeout(() => {
+            if (activeJobId === jobId && document.visibilityState === 'visible') {
+              streamJobEvents(jobId, activeJobLastSeq);
+            }
+          }, 1500);
+        }
+        return;
+      }
+
+      if (jobFinished && activeJobId === jobId) {
+        clearActiveJob();
+      }
+    }
+
+    async function resumeJob(jobId, fromSeq = 0) {
+      if (!jobId) return;
+      activeJobId = jobId;
+      activeJobLastSeq = fromSeq;
+      localStorage.setItem('agy_active_job', jobId);
+      localStorage.setItem('agy_active_seq', String(fromSeq));
+
+      isGenerating = true;
+      btnSend.disabled = true;
+      sendIcon.classList.add('hidden');
+      spinIcon.classList.remove('hidden');
+
+      if (!activeAgentBubble) {
+        activeAccumulatedText = '';
+        activeAgentBubble = appendMessage('agent', '');
+        activeAgentBubble.classList.add('typing-cursor');
+      }
+      startLiveStatus();
+      liveStatusText.textContent = 'Sincronizando tarefa em andamento...';
+      await streamJobEvents(jobId, fromSeq);
+    }
+
+    document.addEventListener('visibilitychange', () => {
+      if (document.visibilityState === 'visible' && activeJobId) {
+        liveStatusText.textContent = 'Retomando sincronização...';
+        streamJobEvents(activeJobId, activeJobLastSeq);
+      }
+    });
+
+    (async function restoreActiveJobOnLoad() {
+      try {
+        if (activeJobId) {
+          const res = await fetch(`/api/jobs/${activeJobId}`);
+          if (res.ok) {
+            const job = await res.json();
+            if (job.status === 'running' || (job.last_seq && job.last_seq > activeJobLastSeq)) {
+              if (job.conversation_id) {
+                currentConversationId = job.conversation_id;
+                localStorage.setItem('agy_conv_id', currentConversationId);
+              }
+              await resumeJob(activeJobId, 0);
+              return;
+            }
+          }
+          localStorage.removeItem('agy_active_job');
+          localStorage.removeItem('agy_active_seq');
+          activeJobId = null;
+          activeJobLastSeq = 0;
+        }
+      } catch (err) {}
+    })();
+
     async function handleSubmit(e) {
       e.preventDefault();
       const text = userInput.value.trim();
@@ -625,93 +868,44 @@
       sendIcon.classList.add('hidden');
       spinIcon.classList.remove('hidden');
 
-      const agentBubble = appendMessage('agent', '');
-      agentBubble.classList.add('typing-cursor');
+      activeAccumulatedText = '';
+      activeAgentBubble = appendMessage('agent', '');
+      activeAgentBubble.classList.add('typing-cursor');
 
       startLiveStatus();
 
-      let accumulatedText = '';
-
       try {
-        const response = await fetch('/api/chat', {
+        const res = await fetch('/api/jobs', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
             prompt: text,
             conversation_id: currentConversationId,
-            model: selectedModel
+            model: selectedModel,
+            permission_mode: selectedPermissionMode
           })
         });
 
-        const reader = response.body.getReader();
-        const decoder = new TextDecoder('utf-8');
-        let buffer = '';
-
-        while (true) {
-          const { done, value } = await reader.read();
-          if (done) break;
-
-          buffer += decoder.decode(value, { stream: true });
-          const lines = buffer.split('\n');
-          buffer = lines.pop();
-
-          for (const line of lines) {
-            const trimmed = line.trim();
-            if (!trimmed || trimmed.startsWith(':')) continue;
-            if (!trimmed.startsWith('data:')) continue;
-            
-            const dataStr = trimmed.slice(5).trim();
-            if (dataStr === '[DONE]') continue;
-
-            try {
-              const event = JSON.parse(dataStr);
-              if (event.type === 'init') {
-                if (event.conversation_id) {
-                  currentConversationId = event.conversation_id;
-                  localStorage.setItem('agy_conv_id', currentConversationId);
-                }
-              } else if (event.type === 'delta') {
-                accumulatedText += event.text;
-                agentBubble.innerHTML = marked.parse(accumulatedText);
-                enhanceCodeBlocks(agentBubble);
-                liveStatusText.textContent = '✍️ Digitando resposta...';
-                scrollToBottom();
-              } else if (event.type === 'tool') {
-                const toolName = event.name || 'ferramenta';
-                const preview = event.preview ? ` (${event.preview.slice(0, 32)}...)` : '';
-                if (event.state === 'ACTIVE') {
-                  liveStatusText.textContent = `⚡ Executando: ${toolName}${preview}`;
-                } else {
-                  liveStatusText.textContent = `✓ Concluído: ${toolName}`;
-                }
-                scrollToBottom();
-              } else if (event.type === 'done') {
-                if (event.conversation_id) {
-                  currentConversationId = event.conversation_id;
-                  localStorage.setItem('agy_conv_id', currentConversationId);
-                }
-              } else if (event.type === 'error') {
-                accumulatedText += `\n\n> ⚠️ **Erro:** ${event.error}`;
-                agentBubble.innerHTML = marked.parse(accumulatedText);
-                enhanceCodeBlocks(agentBubble);
-              }
-            } catch (err) {}
-          }
+        if (!res.ok) {
+          const errData = await res.json().catch(() => ({}));
+          throw new Error(errData.detail || `HTTP ${res.status}`);
         }
+
+        const job = await res.json();
+        activeJobId = job.job_id;
+        activeJobLastSeq = 0;
+        localStorage.setItem('agy_active_job', activeJobId);
+        localStorage.setItem('agy_active_seq', '0');
+
+        if (job.conversation_id) {
+          currentConversationId = job.conversation_id;
+          localStorage.setItem('agy_conv_id', currentConversationId);
+        }
+
+        await streamJobEvents(activeJobId, 0);
       } catch (err) {
-        if (!accumulatedText) {
-          accumulatedText = `> ⚠️ **Conexão pausada:** A tarefa é extensa e continua rodando no CachyCore.\n\nRecarregue a página ou acesse o **Histórico de Sessões** para ver o resultado completo.`;
-        }
-      } finally {
-        stopLiveStatus();
-        agentBubble.classList.remove('typing-cursor');
-        agentBubble.innerHTML = marked.parse(accumulatedText || '*(Sem resposta)*');
-        enhanceCodeBlocks(agentBubble);
-        isGenerating = false;
-        btnSend.disabled = false;
-        sendIcon.classList.remove('hidden');
-        spinIcon.classList.add('hidden');
-        scrollToBottom();
+        activeAccumulatedText = `> **Erro:** ${err.message || err}`;
+        clearActiveJob();
       }
     }
   </script>

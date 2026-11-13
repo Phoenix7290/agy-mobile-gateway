@@ -1,17 +1,19 @@
 import os
 import json
+import uuid
 import shlex
 import socket
 import asyncio
-from datetime import datetime
 from typing import Optional, List, Dict, Any
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Header, Query
 from fastapi.responses import HTMLResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 import wakeonlan
 
-app = FastAPI(title="AGY Mobile Gateway", version="2.2.0")
+from db import GatewayDB
+
+app = FastAPI(title="AGY Mobile Gateway", version="3.0.0")
 
 TARGET_HOST = os.getenv("TARGET_HOST", "192.168.1.190")
 TARGET_USER = os.getenv("TARGET_USER", "ai")
@@ -19,7 +21,11 @@ WOL_MAC = os.getenv("WOL_MAC", "bc:fc:e7:ca:84:05")
 SSH_KEY = os.getenv("SSH_KEY", "/root/.ssh/id_ed25519")
 STATIC_DIR = os.path.join(os.path.dirname(__file__), "static")
 DATA_DIR = os.getenv("DATA_DIR", "/data")
-HISTORY_FILE = os.path.join(DATA_DIR, "history.json")
+DB_PATH = os.path.join(DATA_DIR, "gateway.db")
+
+db = GatewayDB(DB_PATH)
+JOB_NOTIFIERS: Dict[str, asyncio.Condition] = {}
+RUNNING_TASKS: Dict[str, asyncio.Task] = {}
 
 if os.path.exists(STATIC_DIR):
     app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
@@ -29,16 +35,26 @@ DEFAULT_AGY_MODELS = [
     {"id": "gemini-4-argon-high", "name": "Gemini 4 Argon (High)", "type": "cloud", "badge": "Raciocínio"},
     {"id": "claude-sonnet-5-5-high", "name": "Claude Sonnet 5.5 (High)", "type": "cloud", "badge": "Engenharia"},
     {"id": "claude-opus-5-5-high", "name": "Claude Opus 5.5 (High)", "type": "cloud", "badge": "Top"},
-    {"id": "gpt-oss-120b-medium", "name": "GPT-OSS 120B (Medium)", "type": "cloud", "badge": "Open"}
+    {"id": "gpt-oss-120b-medium", "name": "GPT-OSS 120B (Medium)", "type": "cloud", "badge": "Open"},
 ]
 
-class ChatRequest(BaseModel):
+PERMISSION_MODES: Dict[str, List[str]] = {
+    "readonly": ["--mode", "plan"],
+    "copilot": ["--mode", "accept-edits"],
+    "autonomous": ["--dangerously-skip-permissions"],
+}
+
+
+class JobCreateRequest(BaseModel):
     prompt: str
     conversation_id: Optional[str] = None
     model: Optional[str] = "gemini-3.8-flash-high"
+    permission_mode: Optional[str] = "copilot"
+
 
 class WolRequest(BaseModel):
     mac: Optional[str] = None
+
 
 def check_target_online(host: str, port: int = 22, timeout: float = 1.5) -> bool:
     try:
@@ -47,26 +63,13 @@ def check_target_online(host: str, port: int = 22, timeout: float = 1.5) -> bool
     except (socket.timeout, ConnectionRefusedError, OSError):
         return False
 
-def load_local_history() -> Dict[str, Any]:
-    if not os.path.exists(HISTORY_FILE):
-        return {"conversations": {}}
-    try:
-        with open(HISTORY_FILE, "r", encoding="utf-8") as f:
-            return json.load(f)
-    except Exception:
-        return {"conversations": {}}
-
-def save_local_history(data: Dict[str, Any]):
-    os.makedirs(os.path.dirname(HISTORY_FILE), exist_ok=True)
-    with open(HISTORY_FILE, "w", encoding="utf-8") as f:
-        json.dump(data, f, ensure_ascii=False, indent=2)
 
 async def run_ssh_command(cmd_str: str, timeout: float = 5.0) -> Optional[str]:
     ssh_cmd = [
         "ssh", "-i", SSH_KEY, "-o", "StrictHostKeyChecking=accept-new",
         "-o", "BatchMode=yes", "-o", f"ConnectTimeout={int(timeout)}",
         f"{TARGET_USER}@{TARGET_HOST}",
-        cmd_str
+        cmd_str,
     ]
     try:
         proc = await asyncio.create_subprocess_exec(
@@ -79,6 +82,196 @@ async def run_ssh_command(cmd_str: str, timeout: float = 5.0) -> Optional[str]:
         pass
     return None
 
+
+async def _emit_event(job_id: str, event_type: str, payload: Dict[str, Any]) -> None:
+    db.append_job_event(job_id, event_type, payload)
+    cond = JOB_NOTIFIERS.get(job_id)
+    if cond:
+        async with cond:
+            cond.notify_all()
+
+
+async def _run_ollama_job(job_id: str, conv_id: str, prompt: str, selected_model: str) -> None:
+    ollama_model = selected_model.replace("ollama:", "", 1)
+    title = prompt.strip().splitlines()[0][:60] or "Conversa Local"
+    db.ensure_local_conversation(conv_id, title, selected_model)
+    prior_messages = db.get_local_messages(conv_id)
+    db.append_local_message(conv_id, "user", prompt)
+
+    await _emit_event(job_id, "init", {"type": "init", "conversation_id": conv_id, "model": selected_model})
+
+    payload_json = json.dumps({
+        "model": ollama_model,
+        "messages": prior_messages + [{"role": "user", "content": prompt}],
+        "stream": True,
+    })
+
+    cmd = [
+        "ssh", "-i", SSH_KEY, "-o", "StrictHostKeyChecking=accept-new",
+        "-o", "BatchMode=yes", "-o", "ConnectTimeout=5",
+        f"{TARGET_USER}@{TARGET_HOST}",
+        f"curl -s -N -X POST http://127.0.0.1:11434/api/chat -d {shlex.quote(payload_json)}",
+    ]
+
+    accumulated = ""
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            *cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
+        )
+        while True:
+            line = await proc.stdout.readline()  # type: ignore
+            if not line:
+                break
+            line_str = line.decode("utf-8", errors="replace").strip()
+            if not line_str:
+                continue
+            try:
+                chunk = json.loads(line_str)
+            except json.JSONDecodeError:
+                continue
+
+            if chunk.get("error"):
+                raise RuntimeError(chunk["error"])
+
+            token = chunk.get("message", {}).get("content", "")
+            if token:
+                accumulated += token
+                await _emit_event(job_id, "delta", {"type": "delta", "text": token})
+            if chunk.get("done"):
+                break
+
+        await proc.wait()
+        if proc.returncode != 0 and not accumulated:
+            err_bytes = await proc.stderr.read()  # type: ignore
+            raise RuntimeError(err_bytes.decode("utf-8", errors="replace").strip() or f"Erro Ollama ({proc.returncode})")
+
+        if accumulated:
+            db.append_local_message(conv_id, "assistant", accumulated)
+
+        db.update_job(job_id, conversation_id=conv_id, status="completed")
+        await _emit_event(job_id, "done", {"type": "done", "conversation_id": conv_id, "status": "SUCCESS"})
+    except Exception as e:
+        err_msg = str(e)
+        db.update_job(job_id, status="error", error=err_msg)
+        await _emit_event(job_id, "error", {"type": "error", "error": err_msg})
+    finally:
+        RUNNING_TASKS.pop(job_id, None)
+        cond = JOB_NOTIFIERS.get(job_id)
+        if cond:
+            async with cond:
+                cond.notify_all()
+
+
+async def _run_agy_job(
+    job_id: str,
+    conversation_id: Optional[str],
+    prompt: str,
+    selected_model: str,
+    permission_mode: str,
+) -> None:
+    perm_flags = " ".join(PERMISSION_MODES.get(permission_mode, PERMISSION_MODES["copilot"]))
+    agy_cmd = f"agy -p {shlex.quote(prompt)} --output-format stream-json {perm_flags}"
+    if conversation_id:
+        agy_cmd += f" --conversation {shlex.quote(conversation_id)}"
+    if selected_model:
+        agy_cmd += f" --model {shlex.quote(selected_model)}"
+
+    ssh_cmd = [
+        "ssh", "-i", SSH_KEY, "-o", "StrictHostKeyChecking=accept-new",
+        "-o", "BatchMode=yes", "-o", "ConnectTimeout=5",
+        f"{TARGET_USER}@{TARGET_HOST}",
+        agy_cmd,
+    ]
+
+    current_conv_id = conversation_id
+    emitted_any = False
+
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            *ssh_cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
+        )
+        while True:
+            line = await proc.stdout.readline()  # type: ignore
+            if not line:
+                break
+            line_str = line.decode("utf-8", errors="replace").strip()
+            if not line_str:
+                continue
+            try:
+                data = json.loads(line_str)
+            except json.JSONDecodeError:
+                continue
+
+            event_type = data.get("event")
+            if event_type == "init":
+                current_conv_id = data.get("conversation_id", current_conv_id)
+                db.update_job(job_id, conversation_id=current_conv_id)
+                await _emit_event(
+                    job_id,
+                    "init",
+                    {"type": "init", "conversation_id": current_conv_id, "model": selected_model},
+                )
+
+            elif event_type == "step_update":
+                step = data.get("step_update", {})
+                step_type = step.get("step_type")
+                if step_type == "tool":
+                    tool_name = step.get("tool_name", "tool")
+                    tool_state = step.get("state", "ACTIVE")
+                    params = step.get("tool_info", {}).get("parameters", {})
+                    cmd_preview = params.get("CommandLine", "") or params.get("Path", "") or params.get("query", "")
+                    await _emit_event(
+                        job_id,
+                        "tool",
+                        {
+                            "type": "tool",
+                            "name": tool_name,
+                            "state": tool_state,
+                            "preview": str(cmd_preview)[:80],
+                        },
+                    )
+                elif step_type == "agent_response":
+                    delta = step.get("text_delta")
+                    if delta:
+                        emitted_any = True
+                        await _emit_event(job_id, "delta", {"type": "delta", "text": delta})
+
+            elif event_type == "result":
+                res = data.get("result", {})
+                current_conv_id = res.get("conversation_id", current_conv_id)
+                db.update_job(job_id, conversation_id=current_conv_id, status="completed")
+                await _emit_event(
+                    job_id,
+                    "done",
+                    {"type": "done", "conversation_id": current_conv_id, "status": res.get("status")},
+                )
+
+        await proc.wait()
+        job = db.get_job(job_id)
+        if proc.returncode != 0 and not emitted_any:
+            err_bytes = await proc.stderr.read()  # type: ignore
+            err_msg = err_bytes.decode("utf-8", errors="replace").strip() or f"Processo saiu com código {proc.returncode}"
+            db.update_job(job_id, status="error", error=err_msg)
+            await _emit_event(job_id, "error", {"type": "error", "error": err_msg})
+        elif job and job["status"] == "running":
+            db.update_job(job_id, conversation_id=current_conv_id, status="completed")
+            await _emit_event(
+                job_id,
+                "done",
+                {"type": "done", "conversation_id": current_conv_id, "status": "SUCCESS"},
+            )
+    except Exception as e:
+        err_msg = str(e)
+        db.update_job(job_id, status="error", error=err_msg)
+        await _emit_event(job_id, "error", {"type": "error", "error": err_msg})
+    finally:
+        RUNNING_TASKS.pop(job_id, None)
+        cond = JOB_NOTIFIERS.get(job_id)
+        if cond:
+            async with cond:
+                cond.notify_all()
+
+
 @app.get("/", response_class=HTMLResponse)
 async def serve_index():
     index_path = os.path.join(STATIC_DIR, "index.html")
@@ -86,6 +279,7 @@ async def serve_index():
         with open(index_path, "r", encoding="utf-8") as f:
             return HTMLResponse(content=f.read())
     return HTMLResponse("<h3>AGY Mobile Gateway UI not found.</h3>", status_code=404)
+
 
 @app.get("/api/status")
 async def get_status():
@@ -97,6 +291,7 @@ async def get_status():
         "target_user": TARGET_USER,
     }
 
+
 @app.post("/api/wol")
 async def trigger_wol(req: Optional[WolRequest] = None):
     mac_to_wake = (req and req.mac) or WOL_MAC
@@ -105,6 +300,7 @@ async def trigger_wol(req: Optional[WolRequest] = None):
         return {"ok": True, "message": f"Magic Packet enviado para {mac_to_wake}"}
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Erro ao enviar WoL: {str(e)}")
+
 
 @app.get("/api/models")
 async def get_models():
@@ -122,46 +318,43 @@ async def get_models():
                             "id": f"ollama:{m_name}",
                             "name": f"Local: {m_name}",
                             "type": "local",
-                            "badge": "Ollama / GPU"
+                            "badge": "Ollama / GPU",
                         })
             except Exception:
                 pass
     return {"models": models}
 
+
 @app.get("/api/conversations")
 async def list_conversations():
+    merged: List[Dict[str, Any]] = []
+
     is_online = await asyncio.to_thread(check_target_online, TARGET_HOST, 22, 1.5)
     if is_online:
-        # Single Source of Truth: query CachyCore directly for complete sync
         stdout = await run_ssh_command("python3 /home/ai/bin/agy-gateway-sync.py list 100", timeout=6.0)
         if stdout:
             try:
                 data = json.loads(stdout)
-                if "conversations" in data:
-                    return data
+                for c in data.get("conversations", []):
+                    c["engine"] = "agy"
+                    merged.append(c)
             except Exception:
                 pass
 
-    # Fallback to local cache
-    local = load_local_history()
-    convs = list(local.get("conversations", {}).values())
-    convs.sort(key=lambda c: c.get("updated_at", ""), reverse=True)
-    return {
-        "conversations": [
-            {
-                "id": c["id"],
-                "title": c.get("title", "Conversa"),
-                "model": c.get("model", "default"),
-                "created_at": c.get("created_at"),
-                "updated_at": c.get("updated_at"),
-                "message_count": len(c.get("messages", []))
-            }
-            for c in convs
-        ]
-    }
+    merged.extend(db.list_local_conversations())
+    merged.sort(key=lambda c: c.get("updated_at") or "", reverse=True)
+    return {"conversations": merged}
+
 
 @app.get("/api/conversations/{conv_id}")
 async def get_conversation(conv_id: str):
+    local_conv = db.get_local_conversation(conv_id)
+    if local_conv:
+        active_jobs = db.get_active_jobs()
+        matching = [j["id"] for j in active_jobs if j.get("conversation_id") == conv_id]
+        local_conv["active_job_id"] = matching[0] if matching else None
+        return local_conv
+
     is_online = await asyncio.to_thread(check_target_online, TARGET_HOST, 22, 1.5)
     if is_online:
         stdout = await run_ssh_command(f"python3 /home/ai/bin/agy-gateway-sync.py get {shlex.quote(conv_id)}", timeout=5.0)
@@ -169,186 +362,120 @@ async def get_conversation(conv_id: str):
             try:
                 data = json.loads(stdout)
                 if "messages" in data:
+                    data["engine"] = "agy"
+                    active_jobs = db.get_active_jobs()
+                    matching = [j["id"] for j in active_jobs if j.get("conversation_id") == conv_id]
+                    data["active_job_id"] = matching[0] if matching else None
                     return data
             except Exception:
                 pass
 
-    # Fallback to local cache
-    local = load_local_history()
-    conv = local.get("conversations", {}).get(conv_id)
-    if not conv:
-        raise HTTPException(status_code=404, detail="Conversa não encontrada")
-    return conv
+    raise HTTPException(status_code=404, detail="Conversa não encontrada")
+
 
 @app.delete("/api/conversations/{conv_id}")
 async def delete_conversation(conv_id: str):
-    local = load_local_history()
-    convs = local.get("conversations", {})
-    if conv_id in convs:
-        del convs[conv_id]
-        save_local_history(local)
-    return {"ok": True}
+    deleted = db.delete_local_conversation(conv_id)
+    return {"ok": True, "deleted_local": deleted}
 
-@app.post("/api/chat")
-async def chat_stream(req: ChatRequest):
-    if not req.prompt.strip():
+
+@app.post("/api/jobs")
+async def create_job(req: JobCreateRequest):
+    prompt = req.prompt.strip()
+    if not prompt:
         raise HTTPException(status_code=400, detail="Prompt não pode ser vazio")
 
+    is_online = await asyncio.to_thread(check_target_online, TARGET_HOST, 22, 1.5)
+    if not is_online:
+        raise HTTPException(
+            status_code=503,
+            detail=f"CachyCore ({TARGET_HOST}) está inacessível. Use o botão WoL para ligá-lo.",
+        )
+
     selected_model = req.model or "gemini-3.8-flash-high"
+    permission_mode = req.permission_mode if req.permission_mode in PERMISSION_MODES else "copilot"
+    engine = "ollama" if selected_model.startswith("ollama:") else "agy"
+
+    conv_id = req.conversation_id
+    if engine == "ollama" and (not conv_id or not conv_id.startswith("local-")):
+        conv_id = f"local-{uuid.uuid4().hex[:10]}"
+
+    job_id = uuid.uuid4().hex[:12]
+    db.create_job(
+        job_id=job_id,
+        conversation_id=conv_id,
+        engine=engine,
+        model=selected_model,
+        permission_mode=permission_mode,
+        prompt=prompt,
+    )
+
+    JOB_NOTIFIERS[job_id] = asyncio.Condition()
+    if engine == "ollama":
+        task = asyncio.create_task(_run_ollama_job(job_id, conv_id, prompt, selected_model))  # type: ignore
+    else:
+        task = asyncio.create_task(_run_agy_job(job_id, conv_id, prompt, selected_model, permission_mode))
+    RUNNING_TASKS[job_id] = task
+
+    return {"job_id": job_id, "conversation_id": conv_id, "engine": engine, "status": "running"}
+
+
+@app.get("/api/jobs/active")
+async def get_active_jobs():
+    return {"jobs": db.get_active_jobs()}
+
+
+@app.get("/api/jobs/{job_id}")
+async def get_job_status(job_id: str):
+    job = db.get_job(job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Job não encontrado")
+    return job
+
+
+@app.get("/api/jobs/{job_id}/events")
+async def stream_job_events(
+    job_id: str,
+    after: int = Query(0, ge=0),
+    last_event_id: Optional[str] = Header(None, alias="Last-Event-ID"),
+):
+    job = db.get_job(job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Job não encontrado")
+
+    cursor = after
+    if last_event_id and last_event_id.isdigit():
+        cursor = max(cursor, int(last_event_id))
 
     async def event_generator():
-        is_online = await asyncio.to_thread(check_target_online, TARGET_HOST, 22, 1.5)
-        if not is_online:
-            payload = {
-                "type": "error",
-                "error": f"CachyCore ({TARGET_HOST}) está inacessível. O computador pode estar desligado. Use o botão WoL para ligá-lo."
-            }
-            yield f"data: {json.dumps(payload)}\n\n"
-            yield "data: [DONE]\n\n"
-            return
+        nonlocal cursor
+        cond = JOB_NOTIFIERS.get(job_id)
 
-        current_conv_id = req.conversation_id or None
-        accumulated_text = ""
-        emitted_any = False
+        while True:
+            events = db.get_job_events_after(job_id, cursor)
+            for ev in events:
+                cursor = ev["seq"]
+                yield f"id: {cursor}\ndata: {json.dumps(ev['payload'], ensure_ascii=False)}\n\n"
 
-        # Mode A: Local Ollama Model
-        if selected_model.startswith("ollama:"):
-            ollama_model = selected_model.replace("ollama:", "")
-            conv_label = current_conv_id or f"conv-{int(datetime.now().timestamp())}"
-            yield f"data: {json.dumps({'type': 'init', 'conversation_id': conv_label, 'model': selected_model})}\n\n"
-            
-            payload_json = json.dumps({
-                "model": ollama_model,
-                "prompt": req.prompt,
-                "stream": True
-            })
-            
-            cmd = [
-                "ssh", "-i", SSH_KEY, "-o", "StrictHostKeyChecking=accept-new",
-                "-o", "BatchMode=yes", "-o", "ConnectTimeout=5",
-                f"{TARGET_USER}@{TARGET_HOST}",
-                f"curl -s -N -X POST http://127.0.0.1:11434/api/generate -d {shlex.quote(payload_json)}"
-            ]
-            
-            try:
-                proc = await asyncio.create_subprocess_exec(*cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
-                while True:
-                    try:
-                        line = await asyncio.wait_for(proc.stdout.readline(), timeout=8.0)
-                    except asyncio.TimeoutError:
-                        if proc.returncode is not None:
-                            break
-                        yield ": ping\n\n"
-                        continue
-
-                    if not line:
-                        break
-                    line_str = line.decode("utf-8", errors="replace").strip()
-                    if not line_str:
-                        continue
-                    try:
-                        chunk = json.loads(line_str)
-                        token = chunk.get("response", "")
-                        if token:
-                            emitted_any = True
-                            accumulated_text += token
-                            yield f"data: {json.dumps({'type': 'delta', 'text': token})}\n\n"
-                        if chunk.get("done"):
-                            break
-                    except json.JSONDecodeError:
-                        continue
-                await proc.wait()
-                yield f"data: {json.dumps({'type': 'done', 'conversation_id': conv_label, 'status': 'SUCCESS'})}\n\n"
-            except Exception as e:
-                yield f"data: {json.dumps({'type': 'error', 'error': str(e)})}\n\n"
-
-        # Mode B: Antigravity AGY Cloud Model
-        else:
-            agy_cmd = f"agy -p {shlex.quote(req.prompt)} --output-format stream-json --dangerously-skip-permissions"
-            if req.conversation_id:
-                agy_cmd += f" --conversation {shlex.quote(req.conversation_id)}"
-            if selected_model:
-                agy_cmd += f" --model {shlex.quote(selected_model)}"
-
-            ssh_cmd = [
-                "ssh", "-i", SSH_KEY, "-o", "StrictHostKeyChecking=accept-new",
-                "-o", "BatchMode=yes", "-o", "ConnectTimeout=5",
-                f"{TARGET_USER}@{TARGET_HOST}",
-                agy_cmd
-            ]
-
-            try:
-                proc = await asyncio.create_subprocess_exec(
-                    *ssh_cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
-                )
-            except Exception as e:
-                payload = {"type": "error", "error": f"Falha ao disparar processo SSH: {str(e)}"}
-                yield f"data: {json.dumps(payload)}\n\n"
+            current_job = db.get_job(job_id)
+            if not current_job or current_job["status"] != "running":
+                tail_events = db.get_job_events_after(job_id, cursor)
+                for ev in tail_events:
+                    cursor = ev["seq"]
+                    yield f"id: {cursor}\ndata: {json.dumps(ev['payload'], ensure_ascii=False)}\n\n"
                 yield "data: [DONE]\n\n"
-                return
+                break
+
+            if not cond:
+                await asyncio.sleep(0.5)
+                cond = JOB_NOTIFIERS.get(job_id)
+                continue
 
             try:
-                while True:
-                    try:
-                        line = await asyncio.wait_for(proc.stdout.readline(), timeout=8.0)
-                    except asyncio.TimeoutError:
-                        if proc.returncode is not None:
-                            break
-                        yield ": ping\n\n"
-                        continue
-
-                    if not line:
-                        break
-                    line_str = line.decode("utf-8", errors="replace").strip()
-                    if not line_str:
-                        continue
-
-                    try:
-                        data = json.loads(line_str)
-                    except json.JSONDecodeError:
-                        continue
-
-                    event_type = data.get("event")
-                    if event_type == "init":
-                        current_conv_id = data.get("conversation_id", current_conv_id)
-                        yield f"data: {json.dumps({'type': 'init', 'conversation_id': current_conv_id, 'model': selected_model})}\n\n"
-                    
-                    elif event_type == "step_update":
-                        step = data.get("step_update", {})
-                        step_type = step.get("step_type")
-                        
-                        # Live tool updates!
-                        if step_type == "tool":
-                            tool_name = step.get("tool_name", "tool")
-                            tool_state = step.get("state", "ACTIVE")
-                            params = step.get("tool_info", {}).get("parameters", {})
-                            cmd_preview = params.get("CommandLine", "") or params.get("Path", "") or params.get("query", "")
-                            yield f"data: {json.dumps({'type': 'tool', 'name': tool_name, 'state': tool_state, 'preview': str(cmd_preview)[:80]})}\n\n"
-                        
-                        elif step_type == "agent_response":
-                            delta = step.get("text_delta")
-                            if delta:
-                                emitted_any = True
-                                accumulated_text += delta
-                                yield f"data: {json.dumps({'type': 'delta', 'text': delta})}\n\n"
-
-                    elif event_type == "result":
-                        res = data.get("result", {})
-                        conv = res.get("conversation_id", current_conv_id)
-                        yield f"data: {json.dumps({'type': 'done', 'conversation_id': conv, 'status': res.get('status')})}\n\n"
-
-                await proc.wait()
-                if proc.returncode != 0 and not emitted_any:
-                    err_bytes = await proc.stderr.read()
-                    err_msg = err_bytes.decode("utf-8", errors="replace").strip()
-                    yield f"data: {json.dumps({'type': 'error', 'error': err_msg or f'Processo saiu com código {proc.returncode}'})}\n\n"
-
-            except asyncio.CancelledError:
-                pass
-            except Exception as e:
-                yield f"data: {json.dumps({'type': 'error', 'error': str(e)})}\n\n"
-
-        yield "data: [DONE]\n\n"
+                async with cond:
+                    await asyncio.wait_for(cond.wait(), timeout=8.0)
+            except asyncio.TimeoutError:
+                yield ": ping\n\n"
 
     return StreamingResponse(
         event_generator(),
@@ -356,6 +483,6 @@ async def chat_stream(req: ChatRequest):
         headers={
             "Cache-Control": "no-cache",
             "Connection": "keep-alive",
-            "X-Accel-Buffering": "no"
-        }
+            "X-Accel-Buffering": "no",
+        },
     )
