@@ -128,7 +128,7 @@ export async function createJob(payload: {
   model: string;
   permission_mode: PermissionMode;
   attached_files?: string[];
-}): Promise<{ job_id: string; conversation_id: string | null; engine: string; status: string }> {
+}): Promise<{ job_id: string; conversation_id: string | null; engine: string; model?: string; status: string }> {
   const res = await fetch('/api/jobs', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -136,4 +136,8 @@ export async function createJob(payload: {
   });
   if (!res.ok) throw new Error(`HTTP ${res.status}`);
   return res.json();
+}
+
+export async function cancelJob(jobId: string): Promise<void> {
+  await fetch(`/api/jobs/${encodeURIComponent(jobId)}/cancel`, { method: 'POST' });
 }

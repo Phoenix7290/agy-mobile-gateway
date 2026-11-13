@@ -26,27 +26,27 @@ def get_app_dirs() -> AppDirs:
 
     if in_docker:
         data_dir = os.getenv("DATA_DIR", "/data")
-        cache_dir = os.path.join(data_dir, "cache")
+        cache_dir = os.getenv("CACHE_DIR", os.path.join(data_dir, "cache"))
         inbox_dir = os.getenv("INBOX_DIR", "/home/ai/agy-inbox")
         outbox_dir = os.getenv("OUTBOX_DIR", "/home/ai/agy-outbox")
     elif sys.platform == "win32":
         local_app = os.getenv("LOCALAPPDATA") or os.path.join(home, "AppData", "Local")
         data_dir = os.getenv("DATA_DIR", os.path.join(local_app, "agy-gateway", "data"))
-        cache_dir = os.path.join(local_app, "agy-gateway", "cache")
+        cache_dir = os.getenv("CACHE_DIR", os.path.join(local_app, "agy-gateway", "cache"))
         docs_base = os.path.join(home, "Documents", "AGY-Gateway")
         inbox_dir = os.getenv("INBOX_DIR", os.path.join(docs_base, "inbox"))
         outbox_dir = os.getenv("OUTBOX_DIR", os.path.join(docs_base, "outbox"))
     elif sys.platform == "darwin":
         app_support = os.path.join(home, "Library", "Application Support", "agy-gateway")
         data_dir = os.getenv("DATA_DIR", os.path.join(app_support, "data"))
-        cache_dir = os.path.join(home, "Library", "Caches", "agy-gateway")
+        cache_dir = os.getenv("CACHE_DIR", os.path.join(home, "Library", "Caches", "agy-gateway"))
         inbox_dir = os.getenv("INBOX_DIR", os.path.join(home, "agy-inbox"))
         outbox_dir = os.getenv("OUTBOX_DIR", os.path.join(home, "agy-outbox"))
     else:
         xdg_data = os.getenv("XDG_DATA_HOME", os.path.join(home, ".local", "share"))
         xdg_cache = os.getenv("XDG_CACHE_HOME", os.path.join(home, ".cache"))
         data_dir = os.getenv("DATA_DIR", os.path.join(xdg_data, "agy-gateway"))
-        cache_dir = os.path.join(xdg_cache, "agy-gateway")
+        cache_dir = os.getenv("CACHE_DIR", os.path.join(xdg_cache, "agy-gateway"))
         inbox_dir = os.getenv("INBOX_DIR", os.path.join(home, "agy-inbox"))
         outbox_dir = os.getenv("OUTBOX_DIR", os.path.join(home, "agy-outbox"))
 

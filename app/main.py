@@ -6,6 +6,7 @@ import shlex
 import socket
 import asyncio
 import mimetypes
+import urllib.request
 from datetime import datetime, timezone
 from typing import Optional, List, Dict, Any
 from fastapi import FastAPI, HTTPException, Header, Query, UploadFile, File, WebSocket, WebSocketDisconnect
@@ -36,6 +37,60 @@ DB_PATH = os.path.join(DATA_DIR, "gateway.db")
 db = GatewayDB(DB_PATH)
 JOB_NOTIFIERS: Dict[str, asyncio.Condition] = {}
 RUNNING_TASKS: Dict[str, asyncio.Task] = {}
+RUNNING_PROCS: Dict[str, asyncio.subprocess.Process] = {}
+
+
+async def _send_ntfy(title: str, message: str, conv_id: Optional[str] = None, priority: str = "default") -> None:
+    if not cfg.mods.get("ntfy"):
+        return
+    topic = os.getenv("NTFY_TOPIC", "").strip()
+    if not topic:
+        return
+    base_url = os.getenv("NTFY_URL", "https://ntfy.sh").rstrip("/")
+    public_url = os.getenv("PUBLIC_URL", "").rstrip("/")
+
+    def _post() -> None:
+        headers = {"Title": title, "Priority": priority}
+        if public_url and conv_id:
+            headers["Click"] = f"{public_url}/?conv={conv_id}"
+        req = urllib.request.Request(
+            f"{base_url}/{topic}",
+            data=message[:500].encode("utf-8"),
+            headers=headers,
+            method="POST",
+        )
+        try:
+            urllib.request.urlopen(req, timeout=4.0)
+        except Exception:
+            pass
+
+    await asyncio.to_thread(_post)
+
+
+async def _route_auto_model(prompt: str, attached_files: Optional[List[str]]) -> str:
+    """Routes simple/mechanical prompts to local Ollama and complex/coding tasks to Cloud."""
+    p_low = prompt.lower().strip()
+    if attached_files or p_low.startswith("/") or len(prompt) > 350:
+        return "gemini-4-hydrogen-high"
+
+    heavy_keywords = (
+        "crie", "edite", "alter", "refator", "bug", "erro", "implement", "docker",
+        "git ", "python", "svelte", "typescript", "bash", "arquivo", "ssh", "sql",
+        "api", "nginx", "cloudflare", "compose", "systemd", "código", "codigo",
+    )
+    if any(kw in p_low for kw in heavy_keywords):
+        return "gemini-4-hydrogen-high"
+
+    if cfg.mods.get("ollama"):
+        local_models = await runner.list_ollama_models()
+        local_ids = [m["id"] for m in local_models]
+        for preferred in ("ollama:ryan-fast:8b", "ollama:qwen3:8b", "ollama:ryan-flash:14b"):
+            if preferred in local_ids:
+                return preferred
+        if local_ids:
+            return local_ids[0]
+
+    return "gemini-4-hydrogen-high"
 
 WATCHDOG_STATE: Dict[str, Any] = {
     "online": None,
@@ -164,6 +219,7 @@ async def _run_ollama_job(job_id: str, conv_id: str, prompt: str, selected_model
     accumulated = ""
     try:
         proc = await runner.start_ollama_chat(payload_json)
+        RUNNING_PROCS[job_id] = proc
         while True:
             line = await proc.stdout.readline()  # type: ignore
             if not line:
@@ -196,11 +252,23 @@ async def _run_ollama_job(job_id: str, conv_id: str, prompt: str, selected_model
 
         db.update_job(job_id, conversation_id=conv_id, status="completed")
         await _emit_event(job_id, "done", {"type": "done", "conversation_id": conv_id, "status": "SUCCESS", "executed_tools": []})
+        asyncio.create_task(_send_ntfy("AGY (Local) Concluído", accumulated[:200] or "Tarefa finalizada.", conv_id))
+    except asyncio.CancelledError:
+        proc_ref = RUNNING_PROCS.get(job_id)
+        if proc_ref and proc_ref.returncode is None:
+            try:
+                proc_ref.terminate()
+            except Exception:
+                pass
+        db.update_job(job_id, status="error", error="Execução cancelada pelo usuário.")
+        await _emit_event(job_id, "error", {"type": "error", "error": "Execução cancelada pelo usuário."})
     except Exception as e:
         err_msg = str(e)
         db.update_job(job_id, status="error", error=err_msg)
         await _emit_event(job_id, "error", {"type": "error", "error": err_msg})
+        asyncio.create_task(_send_ntfy("AGY Erro", err_msg, conv_id, priority="high"))
     finally:
+        RUNNING_PROCS.pop(job_id, None)
         RUNNING_TASKS.pop(job_id, None)
         cond = JOB_NOTIFIERS.get(job_id)
         if cond:
@@ -228,6 +296,7 @@ async def _run_agy_job(
 
     try:
         proc = await runner.start_agy_process(agy_args)
+        RUNNING_PROCS[job_id] = proc
         while True:
             line = await proc.stdout.readline()  # type: ignore
             if not line:
@@ -370,11 +439,24 @@ async def _run_agy_job(
                     "executed_tools": executed_tools,
                 },
             )
+        if not emitted_any or (job and job["status"] != "error"):
+            asyncio.create_task(_send_ntfy("AGY Concluído", f"Sessão finalizada ({selected_model}).", current_conv_id))
+    except asyncio.CancelledError:
+        proc_ref = RUNNING_PROCS.get(job_id)
+        if proc_ref and proc_ref.returncode is None:
+            try:
+                proc_ref.terminate()
+            except Exception:
+                pass
+        db.update_job(job_id, status="error", error="Execução cancelada pelo usuário.")
+        await _emit_event(job_id, "error", {"type": "error", "error": "Execução cancelada pelo usuário."})
     except Exception as e:
         err_msg = str(e)
         db.update_job(job_id, status="error", error=err_msg)
         await _emit_event(job_id, "error", {"type": "error", "error": err_msg})
+        asyncio.create_task(_send_ntfy("AGY Erro", err_msg, current_conv_id, priority="high"))
     finally:
+        RUNNING_PROCS.pop(job_id, None)
         RUNNING_TASKS.pop(job_id, None)
         cond = JOB_NOTIFIERS.get(job_id)
         if cond:
@@ -512,7 +594,10 @@ async def trigger_wol(req: Optional[WolRequest] = None):
 
 @app.get("/api/models")
 async def get_models():
-    models = list(DEFAULT_AGY_MODELS)
+    models = []
+    if cfg.mods.get("ollama"):
+        models.append({"id": "auto", "name": "Auto (Híbrido: Local + Cloud)", "type": "cloud", "badge": "Economia"})
+    models.extend(DEFAULT_AGY_MODELS)
     if cfg.mods.get("ollama") and await runner.check_online(timeout=1.0):
         models.extend(await runner.list_ollama_models())
     return {"models": models}
@@ -583,22 +668,22 @@ async def create_job(req: JobCreateRequest):
     if not prompt:
         raise HTTPException(status_code=400, detail="Prompt não pode ser vazio")
 
-    is_online = await asyncio.to_thread(check_target_online, TARGET_HOST, 22, 1.5)
-    if not is_online:
+    if not await runner.check_online(timeout=1.5):
         raise HTTPException(
             status_code=503,
-            detail=f"CachyCore ({TARGET_HOST}) está inacessível. Use o botão WoL para ligá-lo.",
+            detail=f"Host ({TARGET_HOST}) está inacessível.",
         )
 
     if req.attached_files:
         files_note = (
-            "[Arquivos anexados pelo usuário em /home/ai/agy-inbox/: "
+            f"[Arquivos anexados pelo usuário em {cfg.dirs.inbox_dir}: "
             + ", ".join(req.attached_files)
             + ". Inspecione-os usando read_file conforme necessário.]\n\n"
         )
         prompt = files_note + prompt
 
-    selected_model = req.model or "gemini-3.8-flash-high"
+    requested_model = req.model or "gemini-4-hydrogen-high"
+    selected_model = await _route_auto_model(prompt, req.attached_files) if requested_model == "auto" else requested_model
     permission_mode = req.permission_mode if req.permission_mode in PERMISSION_MODES else "copilot"
     engine = "ollama" if selected_model.startswith("ollama:") else "agy"
 
@@ -623,7 +708,22 @@ async def create_job(req: JobCreateRequest):
         task = asyncio.create_task(_run_agy_job(job_id, conv_id, prompt, selected_model, permission_mode))
     RUNNING_TASKS[job_id] = task
 
-    return {"job_id": job_id, "conversation_id": conv_id, "engine": engine, "status": "running"}
+    return {"job_id": job_id, "conversation_id": conv_id, "engine": engine, "model": selected_model, "status": "running"}
+
+
+@app.post("/api/jobs/{job_id}/cancel")
+async def cancel_job(job_id: str):
+    proc = RUNNING_PROCS.get(job_id)
+    if proc and proc.returncode is None:
+        try:
+            proc.terminate()
+        except Exception:
+            pass
+    task = RUNNING_TASKS.get(job_id)
+    if task and not task.done():
+        task.cancel()
+        return {"ok": True, "status": "cancelling"}
+    return {"ok": True, "status": "not_running"}
 
 
 @app.get("/api/jobs/active")

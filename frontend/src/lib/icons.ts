@@ -25,7 +25,8 @@ export type IconName =
   | 'check'
   | 'alert'
   | 'file'
-  | 'clock';
+  | 'clock'
+  | 'stop';
 
 export interface IconShape {
   tag: 'path' | 'circle' | 'rect' | 'line' | 'polyline' | 'polygon';
@@ -148,6 +149,9 @@ const ICONS: Record<IconName, IconShape[]> = {
   clock: [
     { tag: 'circle', attrs: { cx: 12, cy: 12, r: 10 } },
     { tag: 'polyline', attrs: { points: '12 6 12 12 16 14' } },
+  ],
+  stop: [
+    { tag: 'rect', attrs: { x: 6, y: 6, width: 12, height: 12, rx: 2, ry: 2 } },
   ],
 };
 

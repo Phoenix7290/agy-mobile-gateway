@@ -6,6 +6,7 @@
   import TerminalModal from './components/TerminalModal.svelte';
   import OutboxModal from './components/OutboxModal.svelte';
   import {
+    cancelJob,
     createJob,
     fetchConversation,
     fetchFeatures,
@@ -126,8 +127,51 @@
     }
   }
 
+  function escapeHtml(str: string): string {
+    return str
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;');
+  }
+
+  const mdRenderer = new marked.Renderer();
+  mdRenderer.code = ({ text, lang }: { text: string; lang?: string }) => {
+    const isDiff = lang === 'diff' || (/^(---|\+\+\+|@@ )/m.test(text) && /^[+-]/m.test(text));
+    if (isDiff) {
+      const linesHtml = text
+        .split('\n')
+        .map((line) => {
+          const esc = escapeHtml(line) || ' ';
+          if (line.startsWith('+') && !line.startsWith('+++')) {
+            return `<div class="bg-emerald-950/60 text-emerald-300 px-2 whitespace-pre">${esc}</div>`;
+          }
+          if (line.startsWith('-') && !line.startsWith('---')) {
+            return `<div class="bg-rose-950/60 text-rose-300 px-2 whitespace-pre">${esc}</div>`;
+          }
+          if (line.startsWith('@@')) {
+            return `<div class="bg-sky-950/50 text-sky-300 px-2 font-semibold whitespace-pre">${esc}</div>`;
+          }
+          return `<div class="text-zinc-400 px-2 whitespace-pre">${esc}</div>`;
+        })
+        .join('');
+      return `<details open class="my-2 rounded-xl border border-zinc-700/80 bg-zinc-950 overflow-hidden"><summary class="px-3 py-1.5 bg-zinc-900 text-xs font-mono text-zinc-300 cursor-pointer select-none">Diff Visual</summary><div class="overflow-x-auto text-[11px] font-mono py-1.5 leading-5">${linesHtml}</div></details>`;
+    }
+    return `<pre><code class="language-${escapeHtml(lang || '')}">${escapeHtml(text)}</code></pre>`;
+  };
+
   function renderMarkdown(text: string): string {
-    return marked.parse(text || '', { async: false }) as string;
+    return marked.parse(text || '', { async: false, renderer: mdRenderer }) as string;
+  }
+
+  async function handleCancelActiveJob() {
+    if (!activeJobId) return;
+    const jid = activeJobId;
+    liveStatus = 'Cancelando execução...';
+    try {
+      await cancelJob(jid);
+    } catch {
+      // ignore
+    }
   }
 
   function startElapsedTimer() {
@@ -570,7 +614,17 @@
         <span class="w-2 h-2 rounded-full bg-sky-400 animate-pulse shrink-0"></span>
         <span class="truncate">{liveStatus}</span>
       </div>
-      <span class="text-zinc-500 shrink-0">{liveElapsed}s</span>
+      <div class="flex items-center gap-2 shrink-0">
+        <span class="text-zinc-500">{liveElapsed}s</span>
+        <button
+          type="button"
+          onclick={handleCancelActiveJob}
+          class="px-2 py-0.5 rounded bg-rose-600/20 text-rose-300 border border-rose-500/40 hover:bg-rose-600/30 text-[10px] font-semibold flex items-center gap-1"
+        >
+          <Icon name="stop" size={10} />
+          <span>Cancelar</span>
+        </button>
+      </div>
     </div>
   {/if}
 
@@ -696,14 +750,26 @@
         class="flex-1 bg-zinc-950 border border-zinc-800 rounded-xl px-3 py-2 text-sm text-zinc-100 placeholder-zinc-500 focus:outline-none focus:border-sky-500 resize-none max-h-[120px]"
       ></textarea>
 
-      <button
-        type="submit"
-        disabled={isGenerating || (!userInput.trim() && attachedFiles.length === 0)}
-        class="p-2.5 rounded-xl bg-sky-600 hover:bg-sky-500 disabled:opacity-40 text-white shrink-0 transition-all"
-        aria-label="Enviar"
-      >
-        <Icon name="send" size={18} />
-      </button>
+      {#if isGenerating && activeJobId}
+        <button
+          type="button"
+          onclick={handleCancelActiveJob}
+          class="p-2.5 rounded-xl bg-rose-600 hover:bg-rose-500 text-white shrink-0 transition-all"
+          title="Cancelar execução (Esc)"
+          aria-label="Cancelar"
+        >
+          <Icon name="stop" size={18} />
+        </button>
+      {:else}
+        <button
+          type="submit"
+          disabled={isGenerating || (!userInput.trim() && attachedFiles.length === 0)}
+          class="p-2.5 rounded-xl bg-sky-600 hover:bg-sky-500 disabled:opacity-40 text-white shrink-0 transition-all"
+          aria-label="Enviar"
+        >
+          <Icon name="send" size={18} />
+        </button>
+      {/if}
     </form>
   </footer>
 </div>
