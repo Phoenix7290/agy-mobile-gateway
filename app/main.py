@@ -7,21 +7,23 @@ import socket
 import asyncio
 import mimetypes
 from typing import Optional, List, Dict, Any
-from fastapi import FastAPI, HTTPException, Header, Query, UploadFile, File
-from fastapi.responses import HTMLResponse, StreamingResponse
+from fastapi import FastAPI, HTTPException, Header, Query, UploadFile, File, WebSocket, WebSocketDisconnect
+from fastapi.responses import HTMLResponse, StreamingResponse, FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 import wakeonlan
+import websockets
 
 from db import GatewayDB
 
-app = FastAPI(title="AGY Mobile Gateway", version="3.1.0")
+app = FastAPI(title="AGY Mobile Gateway", version="3.2.0")
 
 TARGET_HOST = os.getenv("TARGET_HOST", "192.168.1.190")
 TARGET_USER = os.getenv("TARGET_USER", "ai")
 WOL_MAC = os.getenv("WOL_MAC", "bc:fc:e7:ca:84:05")
 SSH_KEY = os.getenv("SSH_KEY", "/root/.ssh/id_ed25519")
 STATIC_DIR = os.path.join(os.path.dirname(__file__), "static")
+DIST_DIR = os.path.join(STATIC_DIR, "dist")
 DATA_DIR = os.getenv("DATA_DIR", "/data")
 DB_PATH = os.path.join(DATA_DIR, "gateway.db")
 
@@ -29,10 +31,15 @@ db = GatewayDB(DB_PATH)
 JOB_NOTIFIERS: Dict[str, asyncio.Condition] = {}
 RUNNING_TASKS: Dict[str, asyncio.Task] = {}
 
+if os.path.exists(os.path.join(DIST_DIR, "assets")):
+    app.mount("/assets", StaticFiles(directory=os.path.join(DIST_DIR, "assets")), name="assets")
 if os.path.exists(STATIC_DIR):
     app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
 DEFAULT_AGY_MODELS = [
+    {"id": "gemini-4-hydrogen-high", "name": "Gemini 4 Hydrogen (High)", "type": "cloud", "badge": "Hydrogen"},
+    {"id": "gemini-4-hydrogen-xhigh", "name": "Gemini 4 Hydrogen (Extra)", "type": "cloud", "badge": "Extra"},
+    {"id": "gemini-4-hydrogen-medium", "name": "Gemini 4 Hydrogen (Medium)", "type": "cloud", "badge": "Hydrogen"},
     {"id": "gemini-3.8-flash-high", "name": "Gemini 3.8 Flash (High)", "type": "cloud", "badge": "Rápido"},
     {"id": "gemini-4-argon-high", "name": "Gemini 4 Argon (High)", "type": "cloud", "badge": "Raciocínio"},
     {"id": "claude-sonnet-5-5-high", "name": "Claude Sonnet 5.5 (High)", "type": "cloud", "badge": "Engenharia"},
@@ -50,9 +57,15 @@ PERMISSION_MODES: Dict[str, List[str]] = {
 class JobCreateRequest(BaseModel):
     prompt: str
     conversation_id: Optional[str] = None
-    model: Optional[str] = "gemini-3.8-flash-high"
+    model: Optional[str] = "gemini-4-hydrogen-high"
     permission_mode: Optional[str] = "copilot"
     attached_files: Optional[List[str]] = None
+
+
+class SettingsUpdateRequest(BaseModel):
+    default_permission_mode: Optional[str] = None
+    default_model: Optional[str] = None
+    default_effort: Optional[str] = None
 
 
 class WolRequest(BaseModel):
@@ -327,11 +340,88 @@ async def _run_agy_job(
 
 @app.get("/", response_class=HTMLResponse)
 async def serve_index():
+    dist_index = os.path.join(DIST_DIR, "index.html")
+    if os.path.exists(dist_index):
+        with open(dist_index, "r", encoding="utf-8") as f:
+            return HTMLResponse(content=f.read())
     index_path = os.path.join(STATIC_DIR, "index.html")
     if os.path.exists(index_path):
         with open(index_path, "r", encoding="utf-8") as f:
             return HTMLResponse(content=f.read())
     return HTMLResponse("<h3>AGY Mobile Gateway UI not found.</h3>", status_code=404)
+
+
+@app.get("/manifest.json")
+async def serve_manifest():
+    for candidate in [os.path.join(DIST_DIR, "manifest.json"), os.path.join(STATIC_DIR, "manifest.json")]:
+        if os.path.exists(candidate):
+            return FileResponse(candidate, media_type="application/manifest+json")
+    raise HTTPException(status_code=404)
+
+
+@app.get("/sw.js")
+async def serve_sw():
+    for candidate in [os.path.join(DIST_DIR, "sw.js"), os.path.join(STATIC_DIR, "sw.js")]:
+        if os.path.exists(candidate):
+            return FileResponse(candidate, media_type="application/javascript")
+    raise HTTPException(status_code=404)
+
+
+@app.get("/api/settings")
+async def get_settings():
+    return db.get_settings()
+
+
+@app.put("/api/settings")
+async def update_settings(req: SettingsUpdateRequest):
+    patch = {k: v for k, v in req.model_dump().items() if v is not None}
+    if "default_permission_mode" in patch and patch["default_permission_mode"] not in PERMISSION_MODES:
+        raise HTTPException(status_code=400, detail="Modo de permissão inválido")
+    return db.update_settings(patch)
+
+
+@app.websocket("/terminal/ws")
+async def terminal_ws_proxy(websocket: WebSocket):
+    """Proxies WebSocket traffic directly between the PWA xterm.js client and local ttyd."""
+    await websocket.accept(subprotocol="tty")
+    ttyd_ws_url = os.getenv("TTYD_WS_URL", "ws://127.0.0.1:7681/terminal/ws")
+    try:
+        async with websockets.connect(ttyd_ws_url, subprotocols=["tty"]) as ttyd_ws:
+            async def client_to_ttyd():
+                try:
+                    while True:
+                        msg = await websocket.receive()
+                        if msg.get("type") == "websocket.disconnect":
+                            break
+                        if "bytes" in msg and msg["bytes"] is not None:
+                            await ttyd_ws.send(msg["bytes"])
+                        elif "text" in msg and msg["text"] is not None:
+                            await ttyd_ws.send(msg["text"])
+                except WebSocketDisconnect:
+                    pass
+                except Exception:
+                    pass
+
+            async def ttyd_to_client():
+                try:
+                    async for data in ttyd_ws:
+                        if isinstance(data, bytes):
+                            await websocket.send_bytes(data)
+                        else:
+                            await websocket.send_text(data)
+                except Exception:
+                    pass
+
+            t1 = asyncio.create_task(client_to_ttyd())
+            t2 = asyncio.create_task(ttyd_to_client())
+            done, pending = await asyncio.wait([t1, t2], return_when=asyncio.FIRST_COMPLETED)
+            for p in pending:
+                p.cancel()
+    except Exception:
+        try:
+            await websocket.close(code=1011)
+        except Exception:
+            pass
 
 
 @app.get("/api/status")
@@ -379,7 +469,11 @@ async def get_models():
 
 
 @app.get("/api/conversations")
-async def list_conversations():
+async def list_conversations(
+    q: Optional[str] = Query(default=None),
+    limit: int = Query(default=50, ge=1, le=200),
+    offset: int = Query(default=0, ge=0),
+):
     merged: List[Dict[str, Any]] = []
 
     is_online = await asyncio.to_thread(check_target_online, TARGET_HOST, 22, 1.5)
@@ -391,12 +485,26 @@ async def list_conversations():
                 for c in data.get("conversations", []):
                     c["engine"] = "agy"
                     merged.append(c)
+                    db.upsert_fts(c.get("id", ""), c.get("title", ""), c.get("preview", "") or c.get("title", ""))
             except Exception:
                 pass
 
     merged.extend(db.list_local_conversations())
     merged.sort(key=lambda c: c.get("updated_at") or "", reverse=True)
-    return {"conversations": merged}
+
+    if q and q.strip():
+        query_str = q.strip().lower()
+        fts_ids = set(db.search_fts(query_str, limit=100))
+        merged = [
+            c for c in merged
+            if c.get("id") in fts_ids
+            or query_str in (c.get("title") or "").lower()
+            or query_str in (c.get("id") or "").lower()
+        ]
+
+    total = len(merged)
+    page = merged[offset : offset + limit]
+    return {"conversations": page, "total": total, "has_more": (offset + limit) < total}
 
 
 @app.get("/api/conversations/{conv_id}")

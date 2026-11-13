@@ -76,6 +76,21 @@ class GatewayDB:
 
                 CREATE INDEX IF NOT EXISTS idx_local_messages_conv
                     ON local_messages(conversation_id, id);
+
+                CREATE TABLE IF NOT EXISTS settings (
+                    key TEXT PRIMARY KEY,
+                    value TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                );
+
+                CREATE TABLE IF NOT EXISTS push_subscriptions (
+                    endpoint TEXT PRIMARY KEY,
+                    subscription_json TEXT NOT NULL,
+                    created_at TEXT NOT NULL
+                );
+
+                CREATE VIRTUAL TABLE IF NOT EXISTS conversations_fts
+                    USING fts5(conv_id UNINDEXED, title, content, tokenize='unicode61');
                 """
             )
             # Mark orphaned running jobs from a previous container crash as interrupted
@@ -224,6 +239,20 @@ class GatewayDB:
                 "UPDATE local_conversations SET updated_at = ? WHERE id = ?",
                 (now, conv_id),
             )
+            conv_row = conn.execute(
+                "SELECT title FROM local_conversations WHERE id = ?", (conv_id,)
+            ).fetchone()
+            all_msgs = conn.execute(
+                "SELECT content FROM local_messages WHERE conversation_id = ? ORDER BY id ASC",
+                (conv_id,),
+            ).fetchall()
+            title = conv_row["title"] if conv_row else ""
+            full_text = "\n".join(r["content"] for r in all_msgs)
+            conn.execute("DELETE FROM conversations_fts WHERE conv_id = ?", (conv_id,))
+            conn.execute(
+                "INSERT INTO conversations_fts (conv_id, title, content) VALUES (?, ?, ?)",
+                (conv_id, title, full_text),
+            )
 
     def get_local_messages(self, conv_id: str) -> List[Dict[str, str]]:
         with self._lock, self._connect() as conn:
@@ -279,5 +308,91 @@ class GatewayDB:
 
     def delete_local_conversation(self, conv_id: str) -> bool:
         with self._lock, self._connect() as conn:
+            conn.execute("DELETE FROM conversations_fts WHERE conv_id = ?", (conv_id,))
             cur = conn.execute("DELETE FROM local_conversations WHERE id = ?", (conv_id,))
             return cur.rowcount > 0
+
+    # --- Settings ---
+
+    def get_settings(self) -> Dict[str, Any]:
+        defaults: Dict[str, Any] = {
+            "default_permission_mode": "copilot",
+            "default_model": "gemini-4-hydrogen-high",
+            "default_effort": "",
+        }
+        with self._lock, self._connect() as conn:
+            rows = conn.execute("SELECT key, value FROM settings").fetchall()
+            for r in rows:
+                try:
+                    defaults[r["key"]] = json.loads(r["value"])
+                except json.JSONDecodeError:
+                    defaults[r["key"]] = r["value"]
+        return defaults
+
+    def update_settings(self, patch: Dict[str, Any]) -> Dict[str, Any]:
+        now = _utc_now()
+        with self._lock, self._connect() as conn:
+            for k, v in patch.items():
+                conn.execute(
+                    """
+                    INSERT INTO settings (key, value, updated_at)
+                    VALUES (?, ?, ?)
+                    ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at
+                    """,
+                    (k, json.dumps(v), now),
+                )
+        return self.get_settings()
+
+    # --- FTS5 Search ---
+
+    def upsert_fts(self, conv_id: str, title: str, content: str) -> None:
+        with self._lock, self._connect() as conn:
+            conn.execute("DELETE FROM conversations_fts WHERE conv_id = ?", (conv_id,))
+            conn.execute(
+                "INSERT INTO conversations_fts (conv_id, title, content) VALUES (?, ?, ?)",
+                (conv_id, title, content),
+            )
+
+    def search_fts(self, query: str, limit: int = 40) -> List[str]:
+        q = query.strip()
+        if not q:
+            return []
+        # Escape FTS5 special characters and match prefix tokens
+        tokens = [f'"{t.replace(chr(34), "")}"*' for t in q.split() if t.strip()]
+        if not tokens:
+            return []
+        fts_query = " AND ".join(tokens)
+        with self._lock, self._connect() as conn:
+            rows = conn.execute(
+                "SELECT conv_id FROM conversations_fts WHERE conversations_fts MATCH ? ORDER BY rank LIMIT ?",
+                (fts_query, limit),
+            ).fetchall()
+            return [r["conv_id"] for r in rows]
+
+    # --- Push Subscriptions ---
+
+    def save_push_subscription(self, endpoint: str, sub_data: Dict[str, Any]) -> None:
+        with self._lock, self._connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO push_subscriptions (endpoint, subscription_json, created_at)
+                VALUES (?, ?, ?)
+                ON CONFLICT(endpoint) DO UPDATE SET subscription_json = excluded.subscription_json
+                """,
+                (endpoint, json.dumps(sub_data), _utc_now()),
+            )
+
+    def delete_push_subscription(self, endpoint: str) -> None:
+        with self._lock, self._connect() as conn:
+            conn.execute("DELETE FROM push_subscriptions WHERE endpoint = ?", (endpoint,))
+
+    def list_push_subscriptions(self) -> List[Dict[str, Any]]:
+        with self._lock, self._connect() as conn:
+            rows = conn.execute("SELECT subscription_json FROM push_subscriptions").fetchall()
+            out = []
+            for r in rows:
+                try:
+                    out.append(json.loads(r["subscription_json"]))
+                except json.JSONDecodeError:
+                    pass
+            return out

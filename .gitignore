@@ -6,3 +6,4 @@ ssh/id_*
 !ssh/id_*.pub
 data/
 .DS_Store
+frontend/node_modules/

@@ -23,4 +23,4 @@ services:
     container_name: agy-ttyd
     restart: unless-stopped
     network_mode: host
-    command: ["ttyd", "-p", "7681", "-b", "/terminal", "-W", "-t", "fontSize=14", "ssh", "-o", "StrictHostKeyChecking=accept-new", "ryanslx@192.168.1.190"]
+    command: ["ttyd", "-p", "7681", "-b", "/terminal", "-W", "-t", "fontSize=14", "ssh", "-t", "-o", "StrictHostKeyChecking=accept-new", "ryanslx@192.168.1.190", "exec fish -l -C 'function fish_greeting; end'"]
