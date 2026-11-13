@@ -615,15 +615,16 @@
       </div>
     {/if}
 
-    <!-- Main Form -->
-    <form onsubmit={handleSubmit} class="flex items-end gap-1.5">
+    <!-- Quick Actions Flex Row (/ + Clipe + Mic) -->
+    <div class="flex items-center gap-1.5">
       <button
         type="button"
         onclick={() => (slashMenuOpen = !slashMenuOpen)}
-        class="px-2.5 py-2.5 rounded-xl text-xs font-mono font-bold shrink-0 transition-colors {slashMenuOpen ? 'bg-sky-600 text-white' : 'bg-zinc-800 text-sky-400 hover:bg-zinc-700'}"
+        class="px-2.5 py-1.5 rounded-lg text-xs font-mono font-semibold flex items-center gap-1 transition-colors {slashMenuOpen ? 'bg-sky-600 text-white' : 'bg-zinc-800/90 text-sky-400 hover:bg-zinc-700'}"
         title="Comandos Slash (/)"
       >
-        /
+        <span>/</span>
+        <span class="font-sans text-[11px] font-medium">Comandos</span>
       </button>
 
       <input
@@ -637,23 +638,28 @@
         type="button"
         onclick={() => fileInputEl?.click()}
         disabled={uploading}
-        class="p-2.5 rounded-xl bg-zinc-800 text-zinc-300 hover:text-sky-400 shrink-0"
+        class="px-2.5 py-1.5 rounded-lg bg-zinc-800/90 text-zinc-300 hover:text-sky-400 text-[11px] font-medium flex items-center gap-1"
         title="Anexar arquivo ou foto"
       >
-        <Icon name="paperclip" size={18} />
+        <Icon name="paperclip" size={14} />
+        <span>Anexar</span>
       </button>
 
       {#if recognition}
         <button
           type="button"
           onclick={toggleVoice}
-          class="p-2.5 rounded-xl shrink-0 transition-colors {isListening ? 'bg-rose-600 text-white animate-pulse' : 'bg-zinc-800 text-zinc-300'}"
+          class="px-2.5 py-1.5 rounded-lg text-[11px] font-medium flex items-center gap-1 transition-colors {isListening ? 'bg-rose-600 text-white animate-pulse' : 'bg-zinc-800/90 text-zinc-300'}"
           title="Ditado por voz"
         >
-          <Icon name="mic" size={18} />
+          <Icon name="mic" size={14} />
+          <span>{isListening ? 'Ouvindo...' : 'Voz'}</span>
         </button>
       {/if}
+    </div>
 
+    <!-- Main Form (Full-width Textarea + Send) -->
+    <form onsubmit={handleSubmit} class="flex items-end gap-1.5">
       <textarea
         bind:this={textareaEl}
         bind:value={userInput}
