@@ -1,49 +1,54 @@
-# 🚀 AGY Mobile Gateway
+# AGY Mobile Gateway
 
 <p align="center">
   <img src="app/static/icon.svg" width="128" height="128" alt="AGY Mobile Gateway Logo" />
 </p>
 
 <p align="center">
-  <b>A lightweight, mobile-first Web Gateway & PWA for Google Antigravity Agent (AGY) and Local LLMs (Ollama).</b><br>
-  Built for developers who want to control their high-performance workstation from a smartphone via WireGuard, without terminal friction.
+  <b>A mobile-first Web Gateway & PWA for Google Antigravity CLI (AGY) and Local LLMs (Ollama).</b><br>
+  Control your workstation from anywhere via Cloudflare Tunnel (Zero Trust + 2FA) or WireGuard VPN with resumable SSE jobs, file transfers, and a native mobile SSH terminal.
 </p>
 
 ---
 
-## ✨ Features
+## Features
 
-- 📱 **Mobile-First PWA:** Native-like touch experience, installable to Home Screen on iOS & Android with zero browser bars.
-- 🎙️ **Zero-Latency Voice Dictation:** Seamless voice-to-text using the browser's native **Web Speech API** (runs 100% on-device on iOS/Android; zero server overhead, zero GPU VRAM used).
-- ⚡ **Real-Time Streaming:** Server-Sent Events (SSE) streaming token-by-token directly from `agy --output-format stream-json` or local Ollama endpoints.
-- 🗂️ **Session History & Multi-Turn:** Integrated slide-over drawer to browse, resume, or delete previous conversation sessions.
-- 🔀 **Model Switcher:** Seamlessly switch between Google Antigravity cloud reasoning models (`Gemini 3.8 Flash`, `Gemini 4 Argon`, `Claude Sonnet 5.5`, `GPT-OSS`) and local GPU models running in Ollama.
-- 💤 **Fake Sleep & Wake-on-LAN Sentinel:** Designed for workstations running in **Fake Sleep (C0 Idle / screens blanked)**; includes automated Wake-on-LAN (Magic Packet) fallback if the target workstation is powered off (S5) or in deep sleep (S3).
-- 🔒 **Zero Public Ports:** Operates entirely over your private LAN or personal WireGuard VPN tunnel.
+- **Mobile-First Svelte 5 PWA:** Compiled with Vite + TypeScript + Tailwind CSS v4 (`~120 KB` gzipped), designed for one-handed smartphone use with zero horizontal overflow.
+- **Resumable Job Engine & SSE:** Decoupled job execution persisted in SQLite (`WAL` mode) with `Last-Event-ID` stream resumption and `visibilitychange` auto-reconnect (survives switching apps on iOS/Android).
+- **Model Switcher & Effort Tiers:** Supports Google Antigravity cloud models (`Gemini 4 Hydrogen` Medium/High/Extra, `Gemini 3.8 Flash`, `Gemini 4 Argon`, `Claude Sonnet/Opus 5.5`, `GPT-OSS 120B`) and local GPU models via Ollama (`/api/chat` with persistent history).
+- **Selectable Permission Modes & Persistent Settings:** Switch between `Copiloto` (`--mode accept-edits`), `Autônomo` (`--dangerously-skip-permissions`), and `Leitura` (`--mode plan`), with defaults persisted in SQLite via the Sidebar Configs tab.
+- **Slash Commands Palette (`/`):** Quick mobile access to `/usage` (live quota breakdown table), `/compact`, `/plan`, `/clear`, and `/status`.
+- **Inbox & Outbox File Transfers:** Upload photos, camera captures, or documents from your phone directly to `~/agy-inbox/` on the workstation, and download generated files from `~/agy-outbox/`.
+- **Native `xterm.js` WebSocket Terminal (HITL):** Integrated `xterm.js` client proxied via `/terminal/ws` to `ttyd`, featuring `visualViewport` keyboard resizing, quick action keys (`Esc`, `Tab`, `Ctrl+C`, arrows, `sudo`, `Colar`), and automatic `fastfetch` suppression on mobile sessions.
+- **Full-Text Search (FTS5) & Pagination:** Instant conversation filtering backed by SQLite FTS5 and paginated loading.
+- **Watchdog & Wake-on-LAN:** Background 60s health watchdog on the Raspberry Pi with dynamic **Acordar** (WoL Magic Packet) button when the workstation is offline.
 
 ---
 
-## 🏗️ Architecture
+## Architecture
 
 ```mermaid
 flowchart LR
-    subgraph Mobile ["📱 Smartphone (WireGuard VPN)"]
-        UI["AGY PWA Web App\n(Web Speech + SSE)"]
+    subgraph Mobile ["Smartphone (Cloudflare Access 2FA / WireGuard)"]
+        UI["Svelte 5 PWA\n(SSE + Native xterm.js)"]
     end
 
-    subgraph Pi ["🍓 Raspberry Pi (Always-On Control Plane)"]
-        GW["AGY Mobile Gateway\n(FastAPI :8088)\nnetwork_mode: host"]
-        WoL["Wake-on-LAN\nMagic Packet"]
+    subgraph Pi ["Raspberry Pi (Control Plane)"]
+        GW["agy-gateway (FastAPI :8088)\nSQLite WAL/FTS5 + Watchdog + WS Proxy"]
+        TTYD["agy-ttyd (:7681)\nBase path /terminal"]
+        WoL["Wake-on-LAN\nUDP Magic Packet"]
     end
 
-    subgraph Desktop ["🖥️ CachyCore Workstation (Compute Node)"]
+    subgraph Desktop ["Workstation (Compute Node)"]
         SSH["sshd (:22)\nEd25519 Keyed"]
         AGY["Google Antigravity CLI\n(agy stream-json)"]
-        Ollama["Ollama Engine\n(RTX 5070 Ti)"]
+        Ollama["Ollama Engine\n(/api/chat)"]
     end
 
-    UI -->|HTTP / SSE| GW
-    GW -->|SSH Stream| SSH
+    UI -->|HTTPS / SSE / WSS| GW
+    GW <-->|WS Proxy /terminal/ws| TTYD
+    GW -->|SSH / SCP| SSH
+    TTYD -->|Interactive SSH| SSH
     SSH --> AGY
     SSH --> Ollama
     GW -.->|UDP 9 Broadcast| WoL
@@ -52,49 +57,57 @@ flowchart LR
 
 ---
 
-## 🚀 Quickstart
+## Repository Structure
 
-### 1. Requirements
-- A target workstation with **Google Antigravity CLI (`agy`)** installed and listening on SSH.
-- A 24/7 host (e.g. Raspberry Pi, home server) running Docker & Docker Compose.
-- Secure network connectivity between devices (LAN or WireGuard VPN).
-
-### 2. Setup
-Clone this repository to your gateway server (e.g. `/opt/stacks/agy-gateway`):
-
-```bash
-git clone https://github.com/your-username/agy-mobile-gateway.git /opt/stacks/agy-gateway
-cd /opt/stacks/agy-gateway
+```text
+agy-mobile-gateway/
+├── app/
+│   ├── main.py              # FastAPI backend, SSE job engine, WS proxy, Watchdog, Inbox/Outbox APIs
+│   ├── db.py                # SQLite WAL persistence, FTS5 search index, settings & job buffers
+│   └── static/
+│       ├── dist/            # Built Svelte 5 production bundle served at /
+│       ├── icon.svg
+│       └── manifest.json
+├── frontend/                # Svelte 5 + Vite + TypeScript + Tailwind v4 source
+│   └── src/
+│       ├── App.svelte
+│       ├── lib/             # Typed API client & Hegemonia-style SVG icon registry
+│       └── components/      # Sidebar, TerminalModal (xterm.js), OutboxModal, Icon
+├── compose.yaml             # Docker Compose stack (agy-gateway + agy-ttyd)
+├── Dockerfile
+├── Dockerfile.ttyd
+├── requirements.txt
+├── AGENTS.md                # Guidelines for AI coding agents
+└── CONTRIBUTING.md          # Collaboration guide for contributors
 ```
 
-Generate a dedicated SSH keypair for the gateway:
+---
+
+## Quickstart & Development
+
+### 1. Gateway Setup (Raspberry Pi / Server)
 ```bash
+git clone https://github.com/Phoenix7290/agy-mobile-gateway.git /opt/stacks/agy-gateway
+cd /opt/stacks/agy-gateway
 mkdir -p ssh data
 ssh-keygen -t ed25519 -f ssh/id_ed25519 -N "" -C "agy-gateway"
 chmod 600 ssh/id_ed25519
 ```
 
-Authorize the public key (`ssh/id_ed25519.pub`) in your compute node's `~/.ssh/authorized_keys`:
-```bash
-cat ssh/id_ed25519.pub | ssh user@workstation-ip "mkdir -p ~/.ssh && cat >> ~/.ssh/authorized_keys"
-```
-
-Configure your environment variables in `.env` (or edit `compose.yaml`):
-```env
-TARGET_HOST=192.168.1.190
-TARGET_USER=ai
-WOL_MAC=bc:fc:e7:ca:84:05
-PORT=8088
-```
-
-### 3. Deploy
+Authorize `ssh/id_ed25519.pub` on the compute node, configure `.env` from `.env.example` (never commit `.env` or private keys), and start the stack:
 ```bash
 docker compose up -d --build
 ```
 
-Access the interface on your smartphone at `http://<gateway-ip>:8088` while connected to your VPN!
+### 2. Frontend Development (Local)
+```bash
+cd frontend
+npm install
+npm run dev      # Vite dev server with /api & /terminal/ws proxy
+npm run build    # Compiles production bundle into ../app/static/dist/
+```
 
 ---
 
-## 📄 License
+## License
 MIT License. Feel free to fork, customize, and contribute!
