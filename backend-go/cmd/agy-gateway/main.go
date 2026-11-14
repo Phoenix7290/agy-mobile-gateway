@@ -9,14 +9,28 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"syscall"
 	"time"
 
 	"github.com/Phoenix7290/agy-mobile-gateway/backend-go/internal/config"
+	"github.com/Phoenix7290/agy-mobile-gateway/backend-go/internal/db"
 	"github.com/Phoenix7290/agy-mobile-gateway/backend-go/internal/web"
 )
 
-const appVersion = "3.3.0-go-m1"
+const appVersion = "3.3.0-go-m2"
+
+var validPermissionModes = map[string]bool{
+	"readonly":   true,
+	"copilot":    true,
+	"autonomous": true,
+}
+
+type settingsUpdateRequest struct {
+	DefaultPermissionMode *string `json:"default_permission_mode"`
+	DefaultModel          *string `json:"default_model"`
+	DefaultEffort         *string `json:"default_effort"`
+}
 
 func writeJSON(w http.ResponseWriter, status int, payload any) {
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
@@ -37,7 +51,7 @@ func checkTargetOnline(cfg config.GatewaySettings, timeout time.Duration) bool {
 	return true
 }
 
-func buildMux(cfg config.GatewaySettings) *http.ServeMux {
+func buildMux(cfg config.GatewaySettings, store *db.GatewayDB) *http.ServeMux {
 	mux := http.NewServeMux()
 
 	mux.HandleFunc("GET /api/health", func(w http.ResponseWriter, r *http.Request) {
@@ -74,6 +88,44 @@ func buildMux(cfg config.GatewaySettings) *http.ServeMux {
 		})
 	})
 
+	mux.HandleFunc("GET /api/settings", func(w http.ResponseWriter, r *http.Request) {
+		settings, err := store.GetSettings()
+		if err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"detail": err.Error()})
+			return
+		}
+		writeJSON(w, http.StatusOK, settings)
+	})
+
+	mux.HandleFunc("PUT /api/settings", func(w http.ResponseWriter, r *http.Request) {
+		var req settingsUpdateRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"detail": "JSON inválido"})
+			return
+		}
+		patch := map[string]any{}
+		if req.DefaultPermissionMode != nil {
+			if !validPermissionModes[*req.DefaultPermissionMode] {
+				writeJSON(w, http.StatusBadRequest, map[string]string{"detail": "Modo de permissão inválido"})
+				return
+			}
+			patch["default_permission_mode"] = *req.DefaultPermissionMode
+		}
+		if req.DefaultModel != nil {
+			patch["default_model"] = *req.DefaultModel
+		}
+		if req.DefaultEffort != nil {
+			patch["default_effort"] = *req.DefaultEffort
+		}
+
+		updated, err := store.UpdateSettings(patch)
+		if err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"detail": err.Error()})
+			return
+		}
+		writeJSON(w, http.StatusOK, updated)
+	})
+
 	web.RegisterRoutes(mux, web.StaticFS())
 	return mux
 }
@@ -88,9 +140,15 @@ func main() {
 		}
 	}
 
+	store, err := db.Open(filepath.Join(cfg.Dirs.DataDir, "gateway.db"))
+	if err != nil {
+		log.Fatalf("failed to open sqlite db: %v", err)
+	}
+	defer store.Close()
+
 	srv := &http.Server{
 		Addr:              ":" + cfg.Port,
-		Handler:           buildMux(cfg),
+		Handler:           buildMux(cfg, store),
 		ReadHeaderTimeout: 10 * time.Second,
 	}
 
