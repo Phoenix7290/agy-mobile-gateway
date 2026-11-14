@@ -4,12 +4,65 @@ import json
 import glob
 import shlex
 import socket
+import sqlite3
 import asyncio
 import urllib.request
 from datetime import datetime
 from typing import Optional, List, Dict, Any, AsyncIterator
 
 from config import GatewaySettings
+
+
+def clean_user_request(text: str) -> str:
+    """Strip AGY <USER_REQUEST> wrapper tags from transcript prompt text."""
+    cleaned = str(text or "")
+    if "<USER_REQUEST>" in cleaned:
+        cleaned = cleaned.split("<USER_REQUEST>", 1)[1]
+    if "</USER_REQUEST>" in cleaned:
+        cleaned = cleaned.split("</USER_REQUEST>", 1)[0]
+    return cleaned.strip()
+
+
+def extract_conversation_title(text: str, fallback: str = "Conversa", max_len: int = 55) -> str:
+    """Extract a clean single-line conversation title, skipping attachment wrapper lines."""
+    cleaned = clean_user_request(text)
+    attach_fallback = ""
+    for raw_line in cleaned.splitlines():
+        line = raw_line.strip()
+        if not line:
+            continue
+        if line.startswith("[Arquivos anexados pelo usuário em "):
+            if not attach_fallback and ":" in line:
+                files_part = line.split(":", 1)[1].split(". Inspecione-os")[0].strip().rstrip("]")
+                names = [os.path.basename(p.strip()) for p in files_part.split(",") if p.strip()]
+                if names:
+                    attach_fallback = f"Anexo: {', '.join(names)}"
+            continue
+        return line[:max_len]
+    if attach_fallback:
+        return attach_fallback[:max_len]
+    return fallback
+
+
+def _load_agy_summary_titles(cli_dir: str) -> Dict[str, str]:
+    """Read non-empty native conversation titles from AGY conversation_summaries.db."""
+    db_path = os.path.join(cli_dir, "conversation_summaries.db")
+    if not os.path.isfile(db_path):
+        return {}
+    titles: Dict[str, str] = {}
+    try:
+        conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True, timeout=1.0)
+        try:
+            for conv_id, title in conn.execute(
+                "SELECT conversation_id, title FROM conversation_summaries WHERE title != ''"
+            ):
+                if conv_id and title:
+                    titles[str(conv_id)] = str(title).strip()
+        finally:
+            conn.close()
+    except Exception:
+        pass
+    return titles
 
 
 def _win_creation_flags() -> int:
@@ -272,6 +325,7 @@ class LocalRunner(BaseRunner):
             brain = self._brain_dir()
             if not os.path.isdir(brain):
                 return []
+            summary_titles = _load_agy_summary_titles(os.path.dirname(brain))
             items: List[Dict[str, Any]] = []
             for conv_path in glob.glob(os.path.join(brain, "*")):
                 conv_id = os.path.basename(conv_path)
@@ -279,42 +333,57 @@ class LocalRunner(BaseRunner):
                 if not os.path.isfile(transcript):
                     continue
                 mtime = datetime.fromtimestamp(os.path.getmtime(transcript)).isoformat()
-                title = conv_id[:8]
+                title = summary_titles.get(conv_id, "")
                 msg_count = 0
                 try:
                     with open(transcript, "r", encoding="utf-8", errors="replace") as f:
                         for line in f:
-                            msg_count += 1
-                            if title == conv_id[:8]:
-                                obj = json.loads(line)
-                                if obj.get("type") == "USER_INPUT" and obj.get("content"):
-                                    title = str(obj["content"]).strip().splitlines()[0][:55]
+                            obj = json.loads(line)
+                            t = obj.get("type")
+                            if t == "USER_INPUT":
+                                msg_count += 1
+                                if not title and obj.get("content"):
+                                    title = extract_conversation_title(obj["content"], fallback="")
+                            elif t == "PLANNER_RESPONSE" and obj.get("content"):
+                                msg_count += 1
                 except Exception:
                     pass
-                items.append({"id": conv_id, "title": title, "updated_at": mtime, "message_count": msg_count})
+                if msg_count > 0:
+                    items.append({
+                        "id": conv_id,
+                        "title": title or conv_id[:8],
+                        "updated_at": mtime,
+                        "message_count": msg_count,
+                    })
             items.sort(key=lambda x: x["updated_at"], reverse=True)
             return items[:limit]
         return await asyncio.to_thread(_scan)
 
     async def get_agy_conversation(self, conv_id: str) -> Optional[Dict[str, Any]]:
         def _read() -> Optional[Dict[str, Any]]:
-            transcript = os.path.join(self._brain_dir(), conv_id, ".system_generated", "logs", "transcript.jsonl")
+            brain = self._brain_dir()
+            transcript = os.path.join(brain, conv_id, ".system_generated", "logs", "transcript.jsonl")
             if not os.path.isfile(transcript):
                 return None
+            summary_titles = _load_agy_summary_titles(os.path.dirname(brain))
+            title = summary_titles.get(conv_id, "")
             msgs: List[Dict[str, str]] = []
             try:
                 with open(transcript, "r", encoding="utf-8", errors="replace") as f:
                     for line in f:
                         obj = json.loads(line)
                         t = obj.get("type")
-                        content = (obj.get("content") or "").strip()
-                        if t == "USER_INPUT" and content:
-                            msgs.append({"role": "user", "content": content})
-                        elif t == "PLANNER_RESPONSE" and content:
-                            msgs.append({"role": "agent", "content": content})
+                        raw_content = (obj.get("content") or "").strip()
+                        if t == "USER_INPUT" and raw_content:
+                            cleaned = clean_user_request(raw_content)
+                            if not title and cleaned:
+                                title = extract_conversation_title(raw_content, fallback="")
+                            msgs.append({"role": "user", "content": cleaned})
+                        elif t == "PLANNER_RESPONSE" and raw_content:
+                            msgs.append({"role": "agent", "content": raw_content})
             except Exception:
                 return None
-            return {"id": conv_id, "messages": msgs}
+            return {"id": conv_id, "title": title or conv_id[:8], "messages": msgs}
         return await asyncio.to_thread(_read)
 
     async def save_to_inbox(self, local_tmp_path: str, clean_name: str) -> str:

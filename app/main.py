@@ -18,7 +18,7 @@ import websockets
 
 from db import GatewayDB
 from config import load_config
-from runners import create_runner
+from runners import create_runner, extract_conversation_title
 
 cfg = load_config()
 runner = create_runner(cfg)
@@ -203,7 +203,7 @@ async def _emit_event(job_id: str, event_type: str, payload: Dict[str, Any]) -> 
 
 async def _run_ollama_job(job_id: str, conv_id: str, prompt: str, selected_model: str) -> None:
     ollama_model = selected_model.replace("ollama:", "", 1)
-    title = prompt.strip().splitlines()[0][:60] or "Conversa Local"
+    title = extract_conversation_title(prompt, fallback="Conversa Local", max_len=60)
     db.ensure_local_conversation(conv_id, title, selected_model)
     prior_messages = db.get_local_messages(conv_id)
     db.append_local_message(conv_id, "user", prompt)
