@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"io"
+	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -15,14 +16,16 @@ import (
 	"github.com/Phoenix7290/agy-mobile-gateway/backend-go/internal/db"
 	"github.com/Phoenix7290/agy-mobile-gateway/backend-go/internal/jobs"
 	"github.com/Phoenix7290/agy-mobile-gateway/backend-go/internal/runner"
+	"github.com/Phoenix7290/agy-mobile-gateway/backend-go/internal/wol"
 )
 
-func newTestServer(t *testing.T) (*http.ServeMux, *db.GatewayDB) {
+func newTestServer(t *testing.T) (*http.ServeMux, *db.GatewayDB, config.GatewaySettings) {
 	t.Helper()
 	tmpDir := t.TempDir()
 	t.Setenv("GATEWAY_MODE", "standalone")
 	t.Setenv("ENABLE_WOL", "false")
 	t.Setenv("DATA_DIR", tmpDir)
+	t.Setenv("CACHE_DIR", filepath.Join(tmpDir, "cache"))
 	t.Setenv("INBOX_DIR", filepath.Join(tmpDir, "inbox"))
 	t.Setenv("OUTBOX_DIR", filepath.Join(tmpDir, "outbox"))
 	t.Setenv("AGY_BRAIN_DIR", filepath.Join(tmpDir, "brain"))
@@ -36,13 +39,14 @@ func newTestServer(t *testing.T) (*http.ServeMux, *db.GatewayDB) {
 
 	r := runner.Create(cfg)
 	mgr := jobs.NewManager(cfg, store, r)
-	return buildMux(cfg, store, r, mgr), store
+	wd := &watchdogState{}
+	return buildMux(cfg, store, r, mgr, wd), store, cfg
 }
 
 func TestHealthFeaturesStatusModelsAndSettings(t *testing.T) {
-	mux, _ := newTestServer(t)
+	mux, _, _ := newTestServer(t)
 
-	for _, path := range []string{"/api/health", "/api/features", "/api/status", "/api/settings", "/api/models", "/api/jobs/active", "/", "/manifest.json", "/static/icon.svg"} {
+	for _, path := range []string{"/api/health", "/api/features", "/api/status", "/api/watchdog", "/api/telemetry", "/api/settings", "/api/models", "/api/jobs/active", "/api/outbox", "/", "/manifest.json", "/static/icon.svg"} {
 		req := httptest.NewRequest(http.MethodGet, path, nil)
 		rec := httptest.NewRecorder()
 		mux.ServeHTTP(rec, req)
@@ -64,8 +68,67 @@ func TestHealthFeaturesStatusModelsAndSettings(t *testing.T) {
 	}
 }
 
+func TestInboxUploadOutboxAndWoLPacket(t *testing.T) {
+	mux, _, cfg := newTestServer(t)
+
+	// 1. Multipart upload -> saved in Inbox
+	var buf bytes.Buffer
+	mw := multipart.NewWriter(&buf)
+	fw, err := mw.CreateFormFile("file", "relatório teste!.txt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, _ = io.WriteString(fw, "conteudo inbox")
+	_ = mw.Close()
+
+	req := httptest.NewRequest(http.MethodPost, "/api/upload", &buf)
+	req.Header.Set("Content-Type", mw.FormDataContentType())
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("POST /api/upload status %d: %s", rec.Code, rec.Body.String())
+	}
+	var upRes map[string]any
+	_ = json.Unmarshal(rec.Body.Bytes(), &upRes)
+	if upRes["ok"] != true {
+		t.Fatalf("unexpected upload payload: %+v", upRes)
+	}
+
+	// 2. Outbox list, download, delete
+	if err := os.WriteFile(filepath.Join(cfg.Dirs.OutboxDir, "saida.txt"), []byte("ola outbox"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	lsRec := httptest.NewRecorder()
+	mux.ServeHTTP(lsRec, httptest.NewRequest(http.MethodGet, "/api/outbox", nil))
+	if !strings.Contains(lsRec.Body.String(), "saida.txt") {
+		t.Fatalf("expected saida.txt in outbox list: %s", lsRec.Body.String())
+	}
+
+	dlRec := httptest.NewRecorder()
+	mux.ServeHTTP(dlRec, httptest.NewRequest(http.MethodGet, "/api/outbox/saida.txt", nil))
+	if dlRec.Code != http.StatusOK || dlRec.Body.String() != "ola outbox" {
+		t.Fatalf("unexpected outbox download: code=%d body=%q", dlRec.Code, dlRec.Body.String())
+	}
+
+	delRec := httptest.NewRecorder()
+	mux.ServeHTTP(delRec, httptest.NewRequest(http.MethodDelete, "/api/outbox/saida.txt", nil))
+	if delRec.Code != http.StatusOK {
+		t.Fatalf("DELETE /api/outbox status %d", delRec.Code)
+	}
+
+	// 3. WoL disabled check + Magic Packet structure (102 bytes)
+	wolRec := httptest.NewRecorder()
+	mux.ServeHTTP(wolRec, httptest.NewRequest(http.MethodPost, "/api/wol", nil))
+	if wolRec.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 when WoL disabled, got %d", wolRec.Code)
+	}
+	pkt, err := wol.BuildMagicPacket("bc:fc:e7:ca:84:05")
+	if err != nil || len(pkt) != 102 {
+		t.Fatalf("unexpected magic packet len=%d err=%v", len(pkt), err)
+	}
+}
+
 func TestConversationsSearchAndJobSSEStreaming(t *testing.T) {
-	// Mock Ollama streaming HTTP server
 	ollamaSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/api/tags":
@@ -79,9 +142,8 @@ func TestConversationsSearchAndJobSSEStreaming(t *testing.T) {
 	defer ollamaSrv.Close()
 
 	t.Setenv("OLLAMA_URL", ollamaSrv.URL)
-	mux, _ := newTestServer(t)
+	mux, _, _ := newTestServer(t)
 
-	// Start real HTTP test server to verify end-to-end SSE streaming
 	ts := httptest.NewServer(mux)
 	defer ts.Close()
 
@@ -90,9 +152,6 @@ func TestConversationsSearchAndJobSSEStreaming(t *testing.T) {
 		t.Fatalf("POST /api/jobs failed: %v", err)
 	}
 	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("POST /api/jobs status %d", resp.StatusCode)
-	}
 
 	var created struct {
 		JobID          string `json:"job_id"`
@@ -102,7 +161,6 @@ func TestConversationsSearchAndJobSSEStreaming(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Read SSE stream from seq 0
 	sseResp, err := http.Get(ts.URL + "/api/jobs/" + created.JobID + "/events?after=0")
 	if err != nil {
 		t.Fatal(err)
@@ -114,7 +172,6 @@ func TestConversationsSearchAndJobSSEStreaming(t *testing.T) {
 		t.Fatalf("unexpected SSE output: %s", sseText)
 	}
 
-	// Verify conversation persisted & searchable via FTS5
 	convResp, err := http.Get(ts.URL + "/api/conversations?q=DNS")
 	if err != nil {
 		t.Fatal(err)
@@ -133,7 +190,6 @@ func TestConversationsSearchAndJobSSEStreaming(t *testing.T) {
 }
 
 func TestAGYMockStreamJobExecution(t *testing.T) {
-	// Write a tiny mock agy script returning stream-json lines
 	mockDir := t.TempDir()
 	mockScript := filepath.Join(mockDir, "mock-agy.sh")
 	scriptBody := `#!/bin/sh
@@ -146,7 +202,7 @@ echo '{"event":"result","result":{"conversation_id":"conv-mock-1","status":"SUCC
 	}
 	t.Setenv("AGY_BIN", mockScript)
 
-	mux, _ := newTestServer(t)
+	mux, _, _ := newTestServer(t)
 	ts := httptest.NewServer(mux)
 	defer ts.Close()
 

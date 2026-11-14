@@ -57,6 +57,35 @@ type ConversationDetail struct {
 	Messages    []ConversationMessage `json:"messages"`
 }
 
+// OutboxFile mirrors /api/outbox file metadata.
+type OutboxFile struct {
+	Name  string  `json:"name"`
+	Size  int64   `json:"size"`
+	Mtime float64 `json:"mtime"`
+}
+
+// GPUInfo holds NVIDIA GPU telemetry metrics.
+type GPUInfo struct {
+	Name        string `json:"name"`
+	VRAMUsedMB  int    `json:"vram_used_mb"`
+	VRAMTotalMB int    `json:"vram_total_mb"`
+	TempC       int    `json:"temp_c"`
+}
+
+// RAMInfo holds system memory usage in MB.
+type RAMInfo struct {
+	UsedMB  int `json:"used_mb"`
+	TotalMB int `json:"total_mb"`
+}
+
+// TelemetryData mirrors /api/telemetry JSON payload.
+type TelemetryData struct {
+	GPU     *GPUInfo `json:"gpu"`
+	CPUTemp *float64 `json:"cpu_temp"`
+	RAM     *RAMInfo `json:"ram"`
+	Enabled bool     `json:"enabled,omitempty"`
+}
+
 // Runner abstracts local (standalone) vs SSH (gateway) execution.
 type Runner interface {
 	CheckOnline(ctx context.Context, timeout time.Duration) bool
@@ -65,6 +94,11 @@ type Runner interface {
 	ListOllamaModels(ctx context.Context) []ModelInfo
 	ListAGYConversations(ctx context.Context, limit int) ([]ConversationSummary, error)
 	GetAGYConversation(ctx context.Context, convID string) (*ConversationDetail, error)
+	SaveToInbox(ctx context.Context, localTmpPath, cleanName string) (string, error)
+	ListOutbox(ctx context.Context) ([]OutboxFile, error)
+	OpenOutboxFile(ctx context.Context, filename string) (io.ReadCloser, func() error, error)
+	DeleteOutboxFile(ctx context.Context, filename string) error
+	GetTelemetry(ctx context.Context) TelemetryData
 }
 
 // Create builds the configured Runner for standalone or gateway mode.

@@ -5,14 +5,20 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log"
+	"mime"
 	"net/http"
+	"net/http/httputil"
+	"net/url"
 	"os"
 	"os/signal"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -21,9 +27,12 @@ import (
 	"github.com/Phoenix7290/agy-mobile-gateway/backend-go/internal/jobs"
 	"github.com/Phoenix7290/agy-mobile-gateway/backend-go/internal/runner"
 	"github.com/Phoenix7290/agy-mobile-gateway/backend-go/internal/web"
+	"github.com/Phoenix7290/agy-mobile-gateway/backend-go/internal/wol"
 )
 
-const appVersion = "3.3.0-go-m3"
+const appVersion = "3.3.0-go"
+
+var safeFilenameRe = regexp.MustCompile(`[^a-zA-Z0-9_.-]`)
 
 var defaultAGYModels = []runner.ModelInfo{
 	{ID: "gemini-4-hydrogen-high", Name: "Gemini 4 Hydrogen (High)", Type: "cloud", Badge: "Hydrogen"},
@@ -40,6 +49,53 @@ type settingsUpdateRequest struct {
 	DefaultPermissionMode *string `json:"default_permission_mode"`
 	DefaultModel          *string `json:"default_model"`
 	DefaultEffort         *string `json:"default_effort"`
+}
+
+type wolRequest struct {
+	MAC *string `json:"mac"`
+}
+
+type watchdogState struct {
+	mu             sync.RWMutex
+	Online         *bool   `json:"online"`
+	LastChecked    *string `json:"last_checked"`
+	LastSeenOnline *string `json:"last_seen_online"`
+	UptimeChecks   int     `json:"uptime_checks"`
+	DowntimeEvents int     `json:"downtime_events"`
+}
+
+func (w *watchdogState) probe(ctx context.Context, r runner.Runner) {
+	online := r.CheckOnline(ctx, 1500*time.Millisecond)
+	nowISO := time.Now().UTC().Format(time.RFC3339)
+
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	prev := w.Online
+	w.Online = &online
+	w.LastChecked = &nowISO
+	w.UptimeChecks++
+	if online {
+		w.LastSeenOnline = &nowISO
+	} else if prev != nil && *prev {
+		w.DowntimeEvents++
+	}
+}
+
+func (w *watchdogState) snapshot() map[string]any {
+	w.mu.RLock()
+	defer w.mu.RUnlock()
+	return map[string]any{
+		"online":           w.Online,
+		"last_checked":     w.LastChecked,
+		"last_seen_online": w.LastSeenOnline,
+		"uptime_checks":    w.UptimeChecks,
+		"downtime_events":  w.DowntimeEvents,
+	}
+}
+
+func sanitizeFilename(name string) string {
+	base := filepath.Base(name)
+	return safeFilenameRe.ReplaceAllString(base, "_")
 }
 
 func writeJSON(w http.ResponseWriter, status int, payload any) {
@@ -62,7 +118,33 @@ func activeJobIDForConversation(store *db.GatewayDB, convID string) *string {
 	return nil
 }
 
-func buildMux(cfg config.GatewaySettings, store *db.GatewayDB, r runner.Runner, mgr *jobs.Manager) *http.ServeMux {
+func newTerminalProxy(ttydWSURL string) http.Handler {
+	parsed, err := url.Parse(ttydWSURL)
+	if err != nil {
+		return http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			http.Error(w, "TTYD_WS_URL inválida", http.StatusBadGateway)
+		})
+	}
+	switch parsed.Scheme {
+	case "ws":
+		parsed.Scheme = "http"
+	case "wss":
+		parsed.Scheme = "https"
+	}
+	targetPath := parsed.Path
+	if targetPath == "" {
+		targetPath = "/terminal/ws"
+	}
+	baseURL := &url.URL{Scheme: parsed.Scheme, Host: parsed.Host}
+	return &httputil.ReverseProxy{
+		Rewrite: func(pr *httputil.ProxyRequest) {
+			pr.SetURL(baseURL)
+			pr.Out.URL.Path = targetPath
+		},
+	}
+}
+
+func buildMux(cfg config.GatewaySettings, store *db.GatewayDB, r runner.Runner, mgr *jobs.Manager, wd *watchdogState) *http.ServeMux {
 	mux := http.NewServeMux()
 
 	mux.HandleFunc("GET /api/health", func(w http.ResponseWriter, req *http.Request) {
@@ -98,6 +180,42 @@ func buildMux(cfg config.GatewaySettings, store *db.GatewayDB, r runner.Runner, 
 			"target_user": cfg.TargetUser,
 		})
 	})
+
+	mux.HandleFunc("GET /api/watchdog", func(w http.ResponseWriter, _ *http.Request) {
+		writeJSON(w, http.StatusOK, wd.snapshot())
+	})
+
+	mux.HandleFunc("GET /api/telemetry", func(w http.ResponseWriter, req *http.Request) {
+		if enabled, _ := cfg.Mods["telemetry"].(bool); !enabled {
+			writeJSON(w, http.StatusOK, map[string]any{"enabled": false})
+			return
+		}
+		data := r.GetTelemetry(req.Context())
+		data.Enabled = true
+		writeJSON(w, http.StatusOK, data)
+	})
+
+	mux.HandleFunc("POST /api/wol", func(w http.ResponseWriter, req *http.Request) {
+		if enabled, _ := cfg.Mods["wol"].(bool); !enabled {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"detail": "Wake-on-LAN não habilitado neste perfil"})
+			return
+		}
+		var body wolRequest
+		if req.Body != nil {
+			_ = json.NewDecoder(req.Body).Decode(&body)
+		}
+		macToWake := cfg.WolMAC
+		if body.MAC != nil && strings.TrimSpace(*body.MAC) != "" {
+			macToWake = strings.TrimSpace(*body.MAC)
+		}
+		if err := wol.SendMagicPacket(macToWake); err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"detail": fmt.Sprintf("Erro ao enviar WoL: %v", err)})
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "message": fmt.Sprintf("Magic Packet enviado para %s", macToWake)})
+	})
+
+	mux.Handle("/terminal/ws", newTerminalProxy(cfg.TtydWSURL))
 
 	mux.HandleFunc("GET /api/models", func(w http.ResponseWriter, req *http.Request) {
 		models := []runner.ModelInfo{}
@@ -370,6 +488,93 @@ func buildMux(cfg config.GatewaySettings, store *db.GatewayDB, r runner.Runner, 
 		}
 	})
 
+	// --- Inbox Upload & Outbox Files ---
+
+	mux.HandleFunc("POST /api/upload", func(w http.ResponseWriter, req *http.Request) {
+		if err := req.ParseMultipartForm(64 << 20); err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"detail": "Multipart inválido"})
+			return
+		}
+		file, header, err := req.FormFile("file")
+		if err != nil || header == nil || strings.TrimSpace(header.Filename) == "" {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"detail": "Nome de arquivo vazio"})
+			return
+		}
+		defer file.Close()
+
+		cleanName := sanitizeFilename(header.Filename)
+		uploadDir := filepath.Join(cfg.Dirs.CacheDir, "uploads")
+		if err := os.MkdirAll(uploadDir, 0o755); err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"detail": err.Error()})
+			return
+		}
+		localPath := filepath.Join(uploadDir, cleanName)
+		out, err := os.Create(localPath)
+		if err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"detail": err.Error()})
+			return
+		}
+		written, copyErr := io.Copy(out, file)
+		_ = out.Close()
+		if copyErr != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"detail": copyErr.Error()})
+			return
+		}
+
+		destPath, err := r.SaveToInbox(req.Context(), localPath, cleanName)
+		if err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"detail": fmt.Sprintf("Erro ao salvar arquivo no inbox: %v", err)})
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{
+			"ok":       true,
+			"filename": cleanName,
+			"path":     destPath,
+			"size":     written,
+		})
+	})
+
+	mux.HandleFunc("GET /api/outbox", func(w http.ResponseWriter, req *http.Request) {
+		if !r.CheckOnline(req.Context(), 1500*time.Millisecond) {
+			writeJSON(w, http.StatusOK, map[string]any{"files": []runner.OutboxFile{}})
+			return
+		}
+		files, err := r.ListOutbox(req.Context())
+		if err != nil {
+			writeJSON(w, http.StatusOK, map[string]any{"files": []runner.OutboxFile{}})
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"files": files})
+	})
+
+	mux.HandleFunc("GET /api/outbox/{filename}", func(w http.ResponseWriter, req *http.Request) {
+		cleanName := sanitizeFilename(req.PathValue("filename"))
+		if !r.CheckOnline(req.Context(), 1500*time.Millisecond) {
+			writeJSON(w, http.StatusServiceUnavailable, map[string]string{"detail": "Host offline"})
+			return
+		}
+		rc, closeFn, err := r.OpenOutboxFile(req.Context(), cleanName)
+		if err != nil {
+			writeJSON(w, http.StatusNotFound, map[string]string{"detail": "Arquivo não encontrado"})
+			return
+		}
+		defer func() { _ = closeFn() }()
+
+		contentType := mime.TypeByExtension(filepath.Ext(cleanName))
+		if contentType == "" {
+			contentType = "application/octet-stream"
+		}
+		w.Header().Set("Content-Type", contentType)
+		w.Header().Set("Content-Disposition", fmt.Sprintf(`attachment; filename="%s"`, cleanName))
+		_, _ = io.Copy(w, rc)
+	})
+
+	mux.HandleFunc("DELETE /api/outbox/{filename}", func(w http.ResponseWriter, req *http.Request) {
+		cleanName := sanitizeFilename(req.PathValue("filename"))
+		_ = r.DeleteOutboxFile(req.Context(), cleanName)
+		writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+	})
+
 	web.RegisterRoutes(mux, web.StaticFS())
 	return mux
 }
@@ -409,10 +614,29 @@ func main() {
 
 	execRunner := runner.Create(cfg)
 	jobMgr := jobs.NewManager(cfg, store, execRunner)
+	wd := &watchdogState{}
+
+	bgCtx, bgCancel := context.WithCancel(context.Background())
+	defer bgCancel()
+	if enabled, _ := cfg.Mods["watchdog"].(bool); enabled {
+		go func() {
+			wd.probe(bgCtx, execRunner)
+			ticker := time.NewTicker(60 * time.Second)
+			defer ticker.Stop()
+			for {
+				select {
+				case <-bgCtx.Done():
+					return
+				case <-ticker.C:
+					wd.probe(bgCtx, execRunner)
+				}
+			}
+		}()
+	}
 
 	srv := &http.Server{
 		Addr:              ":" + cfg.Port,
-		Handler:           buildMux(cfg, store, execRunner, jobMgr),
+		Handler:           buildMux(cfg, store, execRunner, jobMgr, wd),
 		ReadHeaderTimeout: 10 * time.Second,
 	}
 
@@ -427,6 +651,7 @@ func main() {
 	}()
 
 	<-stop
+	bgCancel()
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	_ = srv.Shutdown(ctx)
