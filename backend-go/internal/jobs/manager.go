@@ -182,6 +182,8 @@ func (m *Manager) StartJob(ctx context.Context, req CreateRequest) (map[string]a
 
 	if engine == "ollama" {
 		go m.runOllamaJob(jobCtx, jobID, *convID, prompt, selectedModel)
+	} else if m.cfg.Mode == "ide-bridge" {
+		go m.runIDEBridgeJob(jobCtx, jobID, convID, prompt, selectedModel, permMode)
 	} else {
 		go m.runAGYJob(jobCtx, jobID, convID, prompt, selectedModel, permMode)
 	}

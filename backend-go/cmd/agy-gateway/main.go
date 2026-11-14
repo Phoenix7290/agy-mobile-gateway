@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -8,6 +9,7 @@ import (
 	"io"
 	"log"
 	"mime"
+	"mime/multipart"
 	"net/http"
 	"net/http/httputil"
 	"net/url"
@@ -573,6 +575,60 @@ func buildMux(cfg config.GatewaySettings, store *db.GatewayDB, r runner.Runner, 
 		cleanName := sanitizeFilename(req.PathValue("filename"))
 		_ = r.DeleteOutboxFile(req.Context(), cleanName)
 		writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+	})
+
+	// Optional faster-whisper audio transcription endpoint (OpenAI-compatible /v1/audio/transcriptions).
+	mux.HandleFunc("POST /api/transcribe", func(w http.ResponseWriter, req *http.Request) {
+		if enabled, _ := cfg.Mods["whisper"].(bool); !enabled || cfg.WhisperURL == "" {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"detail": "Mod Whisper não habilitado (configure ENABLE_WHISPER=true e WHISPER_URL)"})
+			return
+		}
+		if err := req.ParseMultipartForm(32 << 20); err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"detail": "Áudio multipart inválido"})
+			return
+		}
+		file, header, err := req.FormFile("file")
+		if err != nil || header == nil {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"detail": "Arquivo de áudio ausente"})
+			return
+		}
+		defer file.Close()
+
+		var body bytes.Buffer
+		mw := multipart.NewWriter(&body)
+		fw, err := mw.CreateFormFile("file", sanitizeFilename(header.Filename))
+		if err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"detail": err.Error()})
+			return
+		}
+		if _, err := io.Copy(fw, file); err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"detail": err.Error()})
+			return
+		}
+		_ = mw.WriteField("model", "Systran/faster-whisper-small")
+		_ = mw.Close()
+
+		endpoint := strings.TrimRight(cfg.WhisperURL, "/") + "/v1/audio/transcriptions"
+		upReq, err := http.NewRequestWithContext(req.Context(), http.MethodPost, endpoint, &body)
+		if err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"detail": err.Error()})
+			return
+		}
+		upReq.Header.Set("Content-Type", mw.FormDataContentType())
+
+		client := &http.Client{Timeout: 30 * time.Second}
+		upResp, err := client.Do(upReq)
+		if err != nil {
+			writeJSON(w, http.StatusBadGateway, map[string]string{"detail": fmt.Sprintf("Erro ao contatar Whisper: %v", err)})
+			return
+		}
+		defer upResp.Body.Close()
+
+		var parsed struct {
+			Text string `json:"text"`
+		}
+		_ = json.NewDecoder(upResp.Body).Decode(&parsed)
+		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "text": strings.TrimSpace(parsed.Text)})
 	})
 
 	web.RegisterRoutes(mux, web.StaticFS())

@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/Phoenix7290/agy-mobile-gateway/backend-go/internal/config"
 	"github.com/Phoenix7290/agy-mobile-gateway/backend-go/internal/db"
@@ -21,6 +22,11 @@ import (
 
 func newTestServer(t *testing.T) (*http.ServeMux, *db.GatewayDB, config.GatewaySettings) {
 	t.Helper()
+	return newTestServerWithEnv(t, nil)
+}
+
+func newTestServerWithEnv(t *testing.T, extra map[string]string) (*http.ServeMux, *db.GatewayDB, config.GatewaySettings) {
+	t.Helper()
 	tmpDir := t.TempDir()
 	t.Setenv("GATEWAY_MODE", "standalone")
 	t.Setenv("ENABLE_WOL", "false")
@@ -29,6 +35,9 @@ func newTestServer(t *testing.T) (*http.ServeMux, *db.GatewayDB, config.GatewayS
 	t.Setenv("INBOX_DIR", filepath.Join(tmpDir, "inbox"))
 	t.Setenv("OUTBOX_DIR", filepath.Join(tmpDir, "outbox"))
 	t.Setenv("AGY_BRAIN_DIR", filepath.Join(tmpDir, "brain"))
+	for k, v := range extra {
+		t.Setenv(k, v)
+	}
 
 	cfg := config.Load()
 	store, err := db.Open(filepath.Join(tmpDir, "gateway.db"))
@@ -224,5 +233,134 @@ echo '{"event":"result","result":{"conversation_id":"conv-mock-1","status":"SUCC
 	sseBytes, _ := io.ReadAll(sseResp.Body)
 	if !strings.Contains(string(sseBytes), `"conversation_id":"conv-mock-1"`) || !strings.Contains(string(sseBytes), "data: [DONE]") {
 		t.Fatalf("unexpected AGY SSE output: %s", string(sseBytes))
+	}
+}
+
+func TestIDEBridgeQueueExecution(t *testing.T) {
+	bridgeDir := filepath.Join(t.TempDir(), ".agy-bridge")
+	mux, _, cfg := newTestServerWithEnv(t, map[string]string{
+		"GATEWAY_MODE":           "ide-bridge",
+		"IDE_BRIDGE_DIR":         bridgeDir,
+		"IDE_BRIDGE_TIMEOUT_SEC": "10",
+	})
+	if cfg.Mode != "ide-bridge" || cfg.Mods["ide_bridge"] != true {
+		t.Fatalf("expected ide-bridge mode enabled, got mode=%s mods=%+v", cfg.Mode, cfg.Mods)
+	}
+
+	ts := httptest.NewServer(mux)
+	defer ts.Close()
+
+	resp, err := http.Post(ts.URL+"/api/jobs", "application/json", strings.NewReader(`{"prompt":"oi ide","model":"gemini-4-hydrogen-high"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("POST /api/jobs status = %d", resp.StatusCode)
+	}
+	var created struct {
+		JobID string `json:"job_id"`
+	}
+	_ = json.NewDecoder(resp.Body).Decode(&created)
+
+	inboxPath := filepath.Join(bridgeDir, "inbox", created.JobID+".json")
+	outboxPath := filepath.Join(bridgeDir, "outbox", created.JobID+".json")
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		if _, err := os.Stat(inboxPath); err == nil {
+			break
+		}
+		time.Sleep(25 * time.Millisecond)
+	}
+	if _, err := os.Stat(inboxPath); err != nil {
+		t.Fatalf("expected inbox file %s to be written: %v", inboxPath, err)
+	}
+	if err := os.MkdirAll(filepath.Dir(outboxPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(outboxPath, []byte(`{"response":"Resposta da IDE","conversation_id":"ide-conv-1"}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	sseResp, err := http.Get(ts.URL + "/api/jobs/" + created.JobID + "/events?after=0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer sseResp.Body.Close()
+	sseBytes, _ := io.ReadAll(sseResp.Body)
+	out := string(sseBytes)
+	if !strings.Contains(out, "Resposta da IDE") || !strings.Contains(out, `"conversation_id":"ide-conv-1"`) || !strings.Contains(out, "data: [DONE]") {
+		t.Fatalf("unexpected IDE bridge SSE output: %s", out)
+	}
+}
+
+func TestWhisperTranscribeMod(t *testing.T) {
+	// Disabled check first
+	disabledMux, _, _ := newTestServer(t)
+	req := httptest.NewRequest(http.MethodPost, "/api/transcribe", nil)
+	rec := httptest.NewRecorder()
+	disabledMux.ServeHTTP(rec, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 when whisper disabled, got %d", rec.Code)
+	}
+
+	whisperSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/audio/transcriptions" {
+			http.NotFound(w, r)
+			return
+		}
+		if err := r.ParseMultipartForm(4 << 20); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		file, _, err := r.FormFile("file")
+		if err != nil {
+			http.Error(w, "missing file", http.StatusBadRequest)
+			return
+		}
+		_ = file.Close()
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"text":"olá whisper"}`))
+	}))
+	defer whisperSrv.Close()
+
+	mux, _, cfg := newTestServerWithEnv(t, map[string]string{
+		"ENABLE_WHISPER": "true",
+		"WHISPER_URL":    whisperSrv.URL,
+	})
+	if cfg.Mods["whisper"] != true {
+		t.Fatalf("expected whisper mod true, got %+v", cfg.Mods)
+	}
+
+	ts := httptest.NewServer(mux)
+	defer ts.Close()
+
+	var body bytes.Buffer
+	mw := multipart.NewWriter(&body)
+	part, err := mw.CreateFormFile("file", "audio.webm")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, _ = part.Write([]byte("fake-audio-bytes"))
+	_ = mw.Close()
+
+	postReq, err := http.NewRequest(http.MethodPost, ts.URL+"/api/transcribe", &body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	postReq.Header.Set("Content-Type", mw.FormDataContentType())
+	resp, err := http.DefaultClient.Do(postReq)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		raw, _ := io.ReadAll(resp.Body)
+		t.Fatalf("POST /api/transcribe status = %d: %s", resp.StatusCode, string(raw))
+	}
+	var payload map[string]any
+	_ = json.NewDecoder(resp.Body).Decode(&payload)
+	if payload["text"] != "olá whisper" {
+		t.Fatalf("unexpected transcribe payload: %+v", payload)
 	}
 }

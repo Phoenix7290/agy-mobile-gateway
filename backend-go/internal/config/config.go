@@ -18,16 +18,19 @@ type AppDirs struct {
 
 // GatewaySettings mirrors Python GatewaySettings 1:1 for API and mod parity.
 type GatewaySettings struct {
-	Mode       string
-	Port       string
-	TargetHost string
-	TargetUser string
-	WolMAC     string
-	SSHKey     string
-	OllamaURL  string
-	TtydWSURL  string
-	Dirs       AppDirs
-	Mods       map[string]any
+	Mode                string
+	Port                string
+	TargetHost          string
+	TargetUser          string
+	WolMAC              string
+	SSHKey              string
+	OllamaURL           string
+	TtydWSURL           string
+	WhisperURL          string
+	IDEBridgeDir        string
+	IDEBridgeTimeoutSec int
+	Dirs                AppDirs
+	Mods                map[string]any
 }
 
 func envOr(name, fallback string) string {
@@ -141,13 +144,14 @@ func Load() GatewaySettings {
 	inDocker := fileExists("/.dockerenv")
 	envMode := strings.ToLower(envOr("GATEWAY_MODE", ""))
 	mode := "standalone"
-	if envMode == "gateway" || envMode == "standalone" {
+	if envMode == "gateway" || envMode == "standalone" || envMode == "ide-bridge" {
 		mode = envMode
 	} else if inDocker || envOr("TARGET_HOST", "") != "" {
 		mode = "gateway"
 	}
 
 	isGateway := mode == "gateway"
+	isIDEBridge := mode == "ide-bridge" || boolEnv("ENABLE_IDE_BRIDGE", false)
 	dirs := GetAppDirs()
 
 	defaultMAC := ""
@@ -160,6 +164,23 @@ func Load() GatewaySettings {
 	}
 
 	wolMAC := envOr("WOL_MAC", defaultMAC)
+	whisperURL := envOr("WHISPER_URL", "")
+	bridgeDir := envOr("IDE_BRIDGE_DIR", filepath.Join(dirs.DataDir, "agy-bridge"))
+	bridgeTimeout := 180
+	if rawT := envOr("IDE_BRIDGE_TIMEOUT_SEC", ""); rawT != "" {
+		var parsedT int
+		for _, ch := range rawT {
+			if ch >= '0' && ch <= '9' {
+				parsedT = parsedT*10 + int(ch-'0')
+			} else {
+				parsedT = 0
+				break
+			}
+		}
+		if parsedT > 0 {
+			bridgeTimeout = parsedT
+		}
+	}
 
 	mods := map[string]any{
 		"terminal":     boolEnv("ENABLE_TERMINAL", isGateway),
@@ -170,7 +191,8 @@ func Load() GatewaySettings {
 		"fts5_search":  true,
 		"ai_memory":    boolEnv("ENABLE_AI_MEMORY", false) || envOr("AI_MEMORY_SERVER_URL", "") != "",
 		"ntfy":         boolEnv("ENABLE_NTFY", false) || envOr("NTFY_TOPIC", "") != "",
-		"whisper":      boolEnv("ENABLE_WHISPER", false),
+		"whisper":      boolEnv("ENABLE_WHISPER", false) || whisperURL != "",
+		"ide_bridge":   isIDEBridge,
 		"telemetry":    boolEnv("ENABLE_TELEMETRY", isGateway),
 		"slash_commands": []string{
 			"/compact", "/usage", "/diff", "/mem", "/plan", "/clear", "/status",
@@ -178,15 +200,18 @@ func Load() GatewaySettings {
 	}
 
 	return GatewaySettings{
-		Mode:       mode,
-		Port:       envOr("PORT", "8088"),
-		TargetHost: envOr("TARGET_HOST", defaultHost),
-		TargetUser: envOr("TARGET_USER", defaultUser),
-		WolMAC:     wolMAC,
-		SSHKey:     envOr("SSH_KEY", "/root/.ssh/id_ed25519"),
-		OllamaURL:  envOr("OLLAMA_URL", "http://127.0.0.1:11434"),
-		TtydWSURL:  envOr("TTYD_WS_URL", "ws://127.0.0.1:7681/terminal/ws"),
-		Dirs:       dirs,
-		Mods:       mods,
+		Mode:                mode,
+		Port:                envOr("PORT", "8088"),
+		TargetHost:          envOr("TARGET_HOST", defaultHost),
+		TargetUser:          envOr("TARGET_USER", defaultUser),
+		WolMAC:              wolMAC,
+		SSHKey:              envOr("SSH_KEY", "/root/.ssh/id_ed25519"),
+		OllamaURL:           envOr("OLLAMA_URL", "http://127.0.0.1:11434"),
+		TtydWSURL:           envOr("TTYD_WS_URL", "ws://127.0.0.1:7681/terminal/ws"),
+		WhisperURL:          whisperURL,
+		IDEBridgeDir:        bridgeDir,
+		IDEBridgeTimeoutSec: bridgeTimeout,
+		Dirs:                dirs,
+		Mods:                mods,
 	}
 }

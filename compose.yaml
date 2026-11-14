@@ -5,16 +5,22 @@ services:
     restart: unless-stopped
     network_mode: host
     volumes:
-      - ./app:/app
       - ./ssh:/root/.ssh:ro
       - ./data:/data
     environment:
+      - GATEWAY_MODE=${GATEWAY_MODE:-gateway}
+      - DATA_DIR=${DATA_DIR:-/data}
       - TARGET_HOST=${TARGET_HOST:-192.168.1.190}
       - TARGET_USER=${TARGET_USER:-ai}
       - WOL_MAC=${WOL_MAC:-bc:fc:e7:ca:84:05}
       - SSH_KEY=${SSH_KEY:-/root/.ssh/id_ed25519}
       - PORT=${PORT:-8088}
       - ENABLE_TELEMETRY=${ENABLE_TELEMETRY:-true}
+      - ENABLE_TERMINAL=${ENABLE_TERMINAL:-true}
+      - ENABLE_WATCHDOG=${ENABLE_WATCHDOG:-true}
+      - ENABLE_WOL=${ENABLE_WOL:-true}
+      - WHISPER_URL=${WHISPER_URL:-}
+      - ENABLE_WHISPER=${ENABLE_WHISPER:-false}
 
   agy-ttyd:
     build:

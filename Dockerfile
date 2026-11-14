@@ -1,6 +1,20 @@
-FROM python:3.12-slim
+FROM golang:bookworm AS builder
+
+ENV CGO_ENABLED=0 \
+    GOTOOLCHAIN=auto
+
+WORKDIR /src
+
+COPY backend-go/go.mod backend-go/go.sum ./
+RUN go mod download
+
+COPY backend-go/ ./
+RUN go build -ldflags="-s -w" -o /out/agy-gateway ./cmd/agy-gateway
+
+FROM debian:bookworm-slim
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
+    ca-certificates \
     openssh-client \
     iputils-ping \
     curl \
@@ -8,11 +22,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 WORKDIR /app
 
-COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
-
-COPY app/ /app/
+COPY --from=builder /out/agy-gateway /usr/local/bin/agy-gateway
 
 EXPOSE 8088
 
-CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8088"]
+CMD ["/usr/local/bin/agy-gateway"]
