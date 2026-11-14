@@ -1,7 +1,7 @@
 # AGY Mobile Gateway
 
 <p align="center">
-  <img src="app/static/icon.svg" width="128" height="128" alt="AGY Mobile Gateway Logo" />
+  <img src="backend-go/internal/web/static/icon.svg" width="128" height="128" alt="AGY Mobile Gateway Logo" />
 </p>
 
 <p align="center">
@@ -13,7 +13,8 @@
 
 ## Features
 
-- **Compiled Go Core (`backend-go/`):** Single zero-CGO static binary embedding the compiled Svelte 5 frontend (`//go:embed`) and SQLite `WAL` + `FTS5` via `modernc.org/sqlite` (Python `app/` remains available as a legacy fallback).
+- **Compiled Go Core (`backend-go/`):** Single zero-CGO static binary embedding the compiled Svelte 5 frontend (`//go:embed`) and SQLite `WAL` + `FTS5` via `modernc.org/sqlite`.
+- **Prebuilt Binaries Available:** Download ready-to-run executables for Windows (`x86_64`), Linux (`x86_64`/`arm64`), and macOS (`arm64`) from [GitHub Releases](https://github.com/Phoenix7290/agy-mobile-gateway/releases/latest).
 - **Mobile-First Svelte 5 PWA:** Compiled with Vite + TypeScript + Tailwind CSS v4 (`~120 KB` gzipped), designed for one-handed smartphone use with zero horizontal overflow.
 - **Resumable Job Engine & SSE:** Decoupled job execution persisted in SQLite (`WAL` mode) with `after=` / `Last-Event-ID` stream resumption and `visibilitychange` auto-reconnect (survives switching apps on iOS/Android).
 - **Three Gateway Modes (`GATEWAY_MODE`):** `standalone` (local PC on Linux/macOS/Windows), `gateway` (24/7 Raspberry Pi orchestrating workstation over SSH/SCP + WoL), and `ide-bridge` (`.agy-bridge/inbox|outbox` JSON file-queue bridge).
@@ -64,16 +65,14 @@ flowchart LR
 
 ```text
 agy-mobile-gateway/
-├── backend-go/              # Primary Go backend (zero-CGO, static binary, embedded UI)
+├── backend-go/              # Go backend (zero-CGO, static binary, embedded UI)
 │   ├── cmd/agy-gateway/     # HTTP/SSE API, WS proxy, health watchdog, tests
 │   └── internal/            # config, db (SQLite+FTS5), jobs (+ ide_bridge), runner, web, wol
-├── app/                     # Legacy Python/FastAPI backend fallback & built static assets
-│   └── static/dist/         # Compiled Svelte 5 bundle embedded into Go & served by FastAPI
+│       └── web/static/dist/ # Compiled Svelte 5 bundle embedded via //go:embed
 ├── frontend/                # Svelte 5 + Vite + TypeScript + Tailwind v4 source
-├── docs/INSTALL.md          # Multi-platform installation guide (Linux, macOS, Windows, IDE, RPi)
+├── docs/INSTALL.md          # Multi-platform installation & download guide
 ├── compose.yaml             # Docker Compose stack (Go agy-gateway + agy-ttyd)
 ├── Dockerfile               # Multi-stage Go container build
-├── Dockerfile.python        # Legacy Python container Dockerfile (fallback)
 ├── Dockerfile.ttyd          # Custom ttyd WebSocket terminal image
 ├── AGENTS.md                # Guidelines for AI coding agents
 └── CONTRIBUTING.md          # Collaboration guide for contributors
@@ -83,9 +82,12 @@ agy-mobile-gateway/
 
 ## Quickstart & Development
 
-See the full multi-platform guide (including Windows Standalone, Antigravity IDE workflows, and optional mods) in [docs/INSTALL.md](docs/INSTALL.md).
+See the full multi-platform guide (including direct Windows binary downloads, Antigravity IDE workflows, and optional mods) in [docs/INSTALL.md](docs/INSTALL.md).
 
-### 1. Gateway Setup (Raspberry Pi / Docker)
+### 1. Standalone (Prebuilt Release Binary)
+Download the matching binary for your OS from [GitHub Releases](https://github.com/Phoenix7290/agy-mobile-gateway/releases/latest) and run it with `GATEWAY_MODE=standalone`.
+
+### 2. Gateway Setup (Raspberry Pi / Docker)
 ```bash
 git clone https://github.com/Phoenix7290/agy-mobile-gateway.git /opt/stacks/agy-gateway
 cd /opt/stacks/agy-gateway
@@ -99,21 +101,18 @@ Authorize `ssh/id_ed25519.pub` on the compute node, configure `.env` if overridi
 docker compose up -d --build
 ```
 
-### 2. Local Go Backend Development
+### 3. Local Development (Frontend + Go Backend)
 ```bash
-cd backend-go
+# Frontend (compiles directly into backend-go/internal/web/static/dist/)
+cd frontend
+npm install
+npm run build
+
+# Go backend tests & dev server
+cd ../backend-go
 go test -v -race ./...
 GATEWAY_MODE=standalone go run ./cmd/agy-gateway
 ```
-
-### 3. Frontend Development (Local)
-```bash
-cd frontend
-npm install
-npm run dev      # Vite dev server with /api & /terminal/ws proxy
-npm run build    # Compiles production bundle into ../app/static/dist/
-```
-When rebuilding the Go binary, copy updated assets into `backend-go/internal/web/static/` if frontend changes were made (see `backend-go/internal/web/embed.go`).
 
 ---
 

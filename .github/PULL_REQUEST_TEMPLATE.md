@@ -8,8 +8,8 @@
 - [ ] Documentation
 
 ## Checklist
-- [ ] `python3 -m py_compile app/main.py app/db.py` passes
-- [ ] `cd frontend && npm run build` compiled `app/static/dist/` cleanly
+- [ ] `cd backend-go && go test -v -race ./...` passes
+- [ ] `cd frontend && npm run build` compiled `backend-go/internal/web/static/dist/` cleanly
 - [ ] Zero Unicode emojis added to UI components (used `Icon.svelte`)
 - [ ] Tested on mobile viewport without horizontal overflow
 - [ ] No `.env`, SSH keys, or `.db` files included

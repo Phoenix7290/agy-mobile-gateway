@@ -5,7 +5,7 @@ import tailwindcss from '@tailwindcss/vite';
 export default defineConfig({
   plugins: [tailwindcss(), svelte()],
   build: {
-    outDir: '../app/static/dist',
+    outDir: '../backend-go/internal/web/static/dist',
     emptyOutDir: true,
     sourcemap: false,
   },

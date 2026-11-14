@@ -18,15 +18,15 @@ Thank you for contributing! Here is a quick guide to collaborating smoothly on t
    npm install
    npm run build
    ```
-   Commit both your source edits in `frontend/src/` and the compiled bundle in `app/static/dist/` so the Raspberry Pi Docker container can serve updates immediately without Node.js installed.
+   Commit both your source edits in `frontend/src/` and the compiled bundle in `backend-go/internal/web/static/dist/` so the Go binary (`//go:embed`) and Raspberry Pi Docker build bundle updates cleanly without requiring Node.js on the Pi.
 
 ## Code Standards
-- **Backend (Python):** Type-hint new Pydantic models and endpoints; keep SQLite queries thread-safe inside `GatewayDB` (`app/db.py`).
+- **Backend (Go):** Pure-Go zero-CGO (`modernc.org/sqlite`, stdlib `net/http`, `os/exec` with platform build tags in `internal/runner/proc_*.go`). Keep `GatewayDB` (`backend-go/internal/db/db.go`) safe for concurrent access and preserve SSE/JSON API contracts.
 - **Frontend (Svelte 5 + TS):** Use Svelte 5 runes (`$state`, `$derived`, `$props`, `$effect`). Add new SVG icons to `frontend/src/lib/icons.ts` instead of using Unicode emojis.
 - **Security:** Never commit `.env`, SSH private keys (`ssh/id_*`), Cloudflare tokens, or SQLite `.db` files.
 
 ## Pull Request Checklist
-- [ ] `python3 -m py_compile app/main.py app/db.py` passes
+- [ ] `cd backend-go && go test -v -race ./...` passes
 - [ ] `cd frontend && npm run build` succeeds without errors
 - [ ] Tested on mobile viewport (~375px) with no horizontal overflow
 - [ ] No secrets or local database files staged
