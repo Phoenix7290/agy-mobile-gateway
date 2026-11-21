@@ -144,12 +144,25 @@ func ResolveAGYBinary() string {
 		return p
 	}
 	if home, err := os.UserHomeDir(); err == nil {
-		candidate := filepath.Join(home, ".gemini", "antigravity-cli", "bin", "agy")
+		suffix := ""
 		if runtime.GOOS == "windows" {
-			candidate += ".exe"
+			suffix = ".exe"
 		}
-		if _, err := os.Stat(candidate); err == nil {
-			return candidate
+		candidates := []string{
+			filepath.Join(home, ".gemini", "bin", "agy"+suffix),
+			filepath.Join(home, ".gemini", "antigravity-cli", "bin", "agy"+suffix),
+		}
+		if runtime.GOOS == "windows" {
+			localApp := strings.TrimSpace(os.Getenv("LOCALAPPDATA"))
+			if localApp == "" {
+				localApp = filepath.Join(home, "AppData", "Local")
+			}
+			candidates = append(candidates, filepath.Join(localApp, "agy", "bin", "agy.exe"))
+		}
+		for _, c := range candidates {
+			if _, err := os.Stat(c); err == nil {
+				return c
+			}
 		}
 	}
 	return "agy"

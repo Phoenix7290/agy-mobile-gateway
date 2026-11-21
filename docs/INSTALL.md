@@ -9,54 +9,68 @@ Modos de operação suportados (`GATEWAY_MODE`):
 
 ---
 
-## 0. Download Direto (Binários Prontos — Recomendado)
+## 0. Download Direto (Bundles & Binários Prontos — Recomendado)
 
-Baixe o executável pronto na página oficial de **[GitHub Releases (`v3.3.0`)](https://github.com/Phoenix7290/agy-mobile-gateway/releases/latest)**:
+Baixe o pacote pronto para o seu sistema operacional na página oficial de **[GitHub Releases](https://github.com/Phoenix7290/agy-mobile-gateway/releases/latest)**:
 
 | Sistema Operacional | Arquivo na Release |
 | :--- | :--- |
-| **Windows (64-bit x86_64)** | [`agy-gateway-windows-amd64.exe`](https://github.com/Phoenix7290/agy-mobile-gateway/releases/download/v3.3.0/agy-gateway-windows-amd64.exe) |
-| **Linux (PC x86_64)** | [`agy-gateway-linux-amd64`](https://github.com/Phoenix7290/agy-mobile-gateway/releases/download/v3.3.0/agy-gateway-linux-amd64) |
-| **Linux (ARM64 / Raspberry Pi)** | [`agy-gateway-linux-arm64`](https://github.com/Phoenix7290/agy-mobile-gateway/releases/download/v3.3.0/agy-gateway-linux-arm64) |
-| **macOS (Apple Silicon M1/M2/M3/M4)** | [`agy-gateway-darwin-arm64`](https://github.com/Phoenix7290/agy-mobile-gateway/releases/download/v3.3.0/agy-gateway-darwin-arm64) |
+| **Windows (x86_64 bundle: Gateway + Cockpit)** | `agy-mobile-gateway-windows-amd64-bundle.zip` (ou `agy-gateway-windows-amd64.exe`) |
+| **Linux (PC x86_64 bundle)** | `agy-mobile-gateway-linux-amd64-bundle.tar.gz` (ou `agy-gateway-linux-amd64`) |
+| **Linux (ARM64 / Raspberry Pi bundle)** | `agy-mobile-gateway-linux-arm64-bundle.tar.gz` (ou `agy-gateway-linux-arm64`) |
+| **macOS (Apple Silicon / Intel bundle)** | `agy-mobile-gateway-darwin-arm64-bundle.tar.gz` / `darwin-amd64` |
+
+Ao executar o `agy-gateway` interativamente no **Windows** (ou passando `--console` no Linux/macOS):
+- Abre o **Painel de Controle no Terminal** (`[1]` Ligar, `[2]` Desligar/Privacidade, `[4]` Abrir Navegador, `[7]` Ligar/Desligar Auto-Start no boot, `[8]` Criar Atalho no Menu/Desktop, `[Q]` Fechar encerrando tudo);
+- No Linux/macOS sem flags, `agy-gateway` mantém o comportamento padrão Unix (servidor HTTP direto no foreground com logs no `stdout`), ideal para `systemd`, `tmux` ou Docker Compose;
+- Na primeira execução sem `.env`, cria automaticamente um `.env` padrão seguro (`COCKPIT_ALLOW_POWER=false` e `COCKPIT_TOKEN` gerado localmente) em `%LOCALAPPDATA%\agy-gateway\.env` (Windows), `~/Library/Application Support/agy-gateway/.env` (macOS) ou `~/.config/agy-gateway/.env` (Linux).
 
 ---
 
-## 1. Windows (Executável Pronto ou WSL2)
+## 1. Windows (Executável Pronto, Instalador ou WSL2)
 
-### Opção A: Executável Nativo (`agy-gateway-windows-amd64.exe`)
-1. Certifique-se de que o **`agy` CLI** esteja instalado e autenticado na máquina.
-2. Baixe [`agy-gateway-windows-amd64.exe`](https://github.com/Phoenix7290/agy-mobile-gateway/releases/download/v3.3.0/agy-gateway-windows-amd64.exe).
-3. No PowerShell, dentro da pasta do seu projeto/workspace:
+### Opção A: Instalador automático (a partir do código clonado)
 ```powershell
-$env:GATEWAY_MODE = "standalone"
-.\agy-gateway-windows-amd64.exe
+.\scripts\install-windows.ps1            # Instala, cria atalhos Menu Iniciar + Desktop (inicia apenas ao clicar)
+# ou com auto-start no logon:
+.\scripts\install-windows.ps1 -AutoStart
 ```
-4. Acesse no navegador ou celular (mesma rede/Tailscale): `http://<IP-DO-WINDOWS>:8088` (ou `http://localhost:8088`).
+
+### Opção B: Executável/Bundle Pronto (`agy-gateway.exe`)
+1. Certifique-se de que o **`agy` CLI** esteja instalado e autenticado na máquina.
+2. Baixe o `agy-mobile-gateway-windows-amd64-bundle.zip` (extraia em uma pasta) e execute `agy-gateway.exe`.
+3. O painel interativo abre no terminal exibindo os links do PC e do celular na rede (`http://<IP-LOCAL>:8088`), com teclas `[7]` para configurar Auto-Start no boot e `[8]` para criar atalho na Área de Trabalho/Menu Iniciar.
 
 - **Dados / SQLite:** `%LOCALAPPDATA%\agy-gateway\data\gateway.db`
+- **Config `.env`:** `%LOCALAPPDATA%\agy-gateway\.env`
 - **Inbox / Outbox:** `%USERPROFILE%\Documents\AGY-Gateway\inbox` e `outbox`
-- **Sem janelas piscando:** processos filhos do `agy` são iniciados com `CREATE_NO_WINDOW` (`0x08000000`), mantendo tudo invisível em segundo plano.
+- **Privacidade / Zero janelas extras:** processos filhos usam Job Object (`JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`) e `CREATE_NO_WINDOW` — fechar a janela do painel encerra tudo automaticamente.
 
-### Opção B: Via WSL2 (Ubuntu no Windows)
+### Opção C: Via WSL2 (Ubuntu no Windows)
 1. Abra seu terminal Ubuntu no WSL2 com o `agy` CLI autenticado dentro do WSL2.
 2. Siga os passos da seção **Linux & macOS** abaixo.
 
 ---
 
-## 2. Linux & macOS (Binário Pronto ou Compilando do Código)
+## 2. Linux & macOS (Instalador, Binário Pronto ou Compilando do Código)
 
 ### Pré-requisitos
 - **Google Antigravity CLI (`agy`)** instalado e autenticado (`agy auth login` ou sessão ativa).
 
-### Usando o binário pronto
+### Instalador automático (a partir do código clonado)
 ```bash
-# Exemplo Linux x86_64 (ajuste a URL se for linux-arm64 ou darwin-arm64)
-curl -L -o agy-gateway https://github.com/Phoenix7290/agy-mobile-gateway/releases/download/v3.3.0/agy-gateway-linux-amd64
-chmod +x agy-gateway
-
-GATEWAY_MODE=standalone ./agy-gateway
+chmod +x scripts/install.sh
+./scripts/install.sh              # Instala em ~/.local/bin e cria atalho de app (.desktop / .command)
+# ou com auto-start (systemd --user no Linux / LaunchAgent no macOS):
+./scripts/install.sh --autostart
 ```
+
+### Usando o binário/bundle pronto
+```bash
+# Extraia o bundle tar.gz da Release e execute no terminal:
+./agy-gateway
+```
+O mesmo painel interativo funciona no Linux e macOS (`termios`), permitindo alternar **`[7]` Auto-Start no boot** (`systemd --user` / `autostart` no Linux ou `LaunchAgent` no macOS) e **`[8]` Criar atalho de App**. Para rodar como servidor puro sem painel interativo (ex.: Docker/SSH), use `./agy-gateway --daemon` (ou `AGY_HEADLESS=1`).
 
 ### Ou compilando a partir do código-fonte (requer Go 1.26+)
 ```bash

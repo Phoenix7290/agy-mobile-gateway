@@ -7,6 +7,7 @@ import (
 	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -988,5 +989,16 @@ func TestCustomSlashCommandsAndOutboxInlinePreview(t *testing.T) {
 	_ = json.Unmarshal(convRec.Body.Bytes(), &convBody)
 	if len(convBody.Messages) != 2 || len(convBody.Messages[1].OutboxFiles) != 2 {
 		t.Fatalf("expected outbox_files attached on assistant message, got %+v", convBody.Messages)
+	}
+
+	// 4. Local gateway single-instance health detector
+	muxTS := httptest.NewServer(mux)
+	defer muxTS.Close()
+	parsedURL, _ := url.Parse(muxTS.URL)
+	if !isGatewayHealthyLocal(parsedURL.Port()) {
+		t.Fatalf("expected isGatewayHealthyLocal(%s) = true", parsedURL.Port())
+	}
+	if isGatewayHealthyLocal("1") {
+		t.Fatalf("expected isGatewayHealthyLocal(1) = false")
 	}
 }

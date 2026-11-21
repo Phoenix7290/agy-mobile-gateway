@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log"
 	"net/http"
 	"os/exec"
 	"strings"
@@ -70,16 +71,22 @@ func NewScheduler(
 	return s
 }
 
-// Start launches the Cron tick (20s) and hardware/Docker watcher (30s) loops until ctx cancels.
+// Start launches the Cron tick (20s), hardware/Docker watcher (30s), and storage retention cleanup (6h) loops until ctx cancels.
 func (s *Scheduler) Start(ctx context.Context) {
 	s.RecomputeAllNextRuns()
 
 	cronTicker := time.NewTicker(20 * time.Second)
 	watchTicker := time.NewTicker(30 * time.Second)
+	retentionTicker := time.NewTicker(6 * time.Hour)
 	go func() {
 		defer cronTicker.Stop()
 		defer watchTicker.Stop()
+		defer retentionTicker.Stop()
 
+		if rep := RunRetentionCleanup(s.cfg, s.nowFn()); rep.InboxRemoved+rep.OutboxRemoved+rep.BackupsRemoved > 0 {
+			log.Printf("[retention] cleaned inbox=%d outbox=%d backups=%d (%d bytes)",
+				rep.InboxRemoved, rep.OutboxRemoved, rep.BackupsRemoved, rep.TotalBytesReclaimed)
+		}
 		s.TickWatchers(ctx)
 		for {
 			select {
@@ -89,6 +96,11 @@ func (s *Scheduler) Start(ctx context.Context) {
 				s.TickCron(ctx)
 			case <-watchTicker.C:
 				s.TickWatchers(ctx)
+			case <-retentionTicker.C:
+				if rep := RunRetentionCleanup(s.cfg, s.nowFn()); rep.InboxRemoved+rep.OutboxRemoved+rep.BackupsRemoved > 0 {
+					log.Printf("[retention] cleaned inbox=%d outbox=%d backups=%d (%d bytes)",
+						rep.InboxRemoved, rep.OutboxRemoved, rep.BackupsRemoved, rep.TotalBytesReclaimed)
+				}
 			}
 		}
 	}()

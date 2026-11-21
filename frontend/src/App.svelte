@@ -1,17 +1,12 @@
 <script lang="ts">
-  import { onDestroy, onMount } from "svelte";
+  import { onDestroy, onMount, type Component } from "svelte";
   import { fade, fly } from "svelte/transition";
   import { cubicOut } from "svelte/easing";
   import Icon from "./components/Icon.svelte";
   import AiSpinner from "./components/AiSpinner.svelte";
   import ChatPane from "./components/ChatPane.svelte";
   import Sidebar from "./components/Sidebar.svelte";
-  import TerminalModal from "./components/TerminalModal.svelte";
-  import OutboxModal from "./components/OutboxModal.svelte";
-  import OutboxPreviewModal, { type PreviewTarget } from "./components/OutboxPreviewModal.svelte";
-  import ShareModal from "./components/ShareModal.svelte";
-  import AutomationsModal from "./components/AutomationsModal.svelte";
-  import SlashCommandsModal from "./components/SlashCommandsModal.svelte";
+  import type { PreviewTarget } from "./components/OutboxPreviewModal.svelte";
   import { Button } from "./lib/components/ui/button/index.js";
   import { Card } from "./lib/components/ui/card/index.js";
   import { Badge } from "./lib/components/ui/badge/index.js";
@@ -301,7 +296,7 @@
     return "";
   }
 
-  // Modals & Drawers
+  // Modals & Drawers (lazy-loaded chunks for Vite code splitting)
   let sidebarOpen = $state(false);
   let terminalOpen = $state(false);
   let outboxOpen = $state(false);
@@ -312,6 +307,34 @@
   let slashModalOpen = $state(false);
   let slashCommands = $state<SlashCommandItem[]>([]);
   let unreadAlerts = $state(0);
+
+  let TerminalModalComp = $state<Component<any> | null>(null);
+  let OutboxModalComp = $state<Component<any> | null>(null);
+  let OutboxPreviewModalComp = $state<Component<any> | null>(null);
+  let SlashCommandsModalComp = $state<Component<any> | null>(null);
+  let ShareModalComp = $state<Component<any> | null>(null);
+  let AutomationsModalComp = $state<Component<any> | null>(null);
+
+  $effect(() => {
+    if (terminalOpen && !TerminalModalComp) {
+      import("./components/TerminalModal.svelte").then((m) => { TerminalModalComp = m.default; });
+    }
+    if (outboxOpen && !OutboxModalComp) {
+      import("./components/OutboxModal.svelte").then((m) => { OutboxModalComp = m.default; });
+    }
+    if (mediaPreviewTarget && !OutboxPreviewModalComp) {
+      import("./components/OutboxPreviewModal.svelte").then((m) => { OutboxPreviewModalComp = m.default; });
+    }
+    if (slashModalOpen && !SlashCommandsModalComp) {
+      import("./components/SlashCommandsModal.svelte").then((m) => { SlashCommandsModalComp = m.default; });
+    }
+    if (shareOpen && !ShareModalComp) {
+      import("./components/ShareModal.svelte").then((m) => { ShareModalComp = m.default; });
+    }
+    if (automationsOpen && !AutomationsModalComp) {
+      import("./components/AutomationsModal.svelte").then((m) => { AutomationsModalComp = m.default; });
+    }
+  });
 
   // Share Snapshot Modal
   let shareOpen = $state(false);
@@ -1040,40 +1063,52 @@
   }}
 />
 
-<TerminalModal
-  bind:open={terminalOpen}
-  hostLabel={gatewayMode === "standalone"
-    ? "Terminal Local"
-    : "ryanslx@CachyCore"}
-/>
-<OutboxModal bind:open={outboxOpen} bind:files={outboxFiles} {outboxDir} />
-<OutboxPreviewModal bind:target={mediaPreviewTarget} />
-<SlashCommandsModal
-  bind:open={slashModalOpen}
-  bind:commands={slashCommands}
-  {models}
-/>
-<ShareModal
-  bind:open={shareOpen}
-  title={shareTitle}
-  singleMarkdown={shareSingleMD}
-  messages={shareMessages}
-  {themeMode}
-  {themePalette}
-/>
-<AutomationsModal
-  bind:open={automationsOpen}
-  {models}
-  {defaultModel}
-  canInstallPWA={Boolean(deferredInstallPrompt)}
-  onInstallPWA={handleInstallPWA}
-  onOpenConversation={(convId, title) => {
-    paneRefs[focusedTabId]?.loadConversation(convId, title);
-  }}
-  onUnreadChange={(n) => {
-    unreadAlerts = n;
-  }}
-/>
+{#if TerminalModalComp}
+  <TerminalModalComp
+    bind:open={terminalOpen}
+    hostLabel={gatewayMode === "standalone"
+      ? "Terminal Local"
+      : "ryanslx@CachyCore"}
+  />
+{/if}
+{#if OutboxModalComp}
+  <OutboxModalComp bind:open={outboxOpen} bind:files={outboxFiles} {outboxDir} />
+{/if}
+{#if OutboxPreviewModalComp}
+  <OutboxPreviewModalComp bind:target={mediaPreviewTarget} />
+{/if}
+{#if SlashCommandsModalComp}
+  <SlashCommandsModalComp
+    bind:open={slashModalOpen}
+    bind:commands={slashCommands}
+    {models}
+  />
+{/if}
+{#if ShareModalComp}
+  <ShareModalComp
+    bind:open={shareOpen}
+    title={shareTitle}
+    singleMarkdown={shareSingleMD}
+    messages={shareMessages}
+    {themeMode}
+    {themePalette}
+  />
+{/if}
+{#if AutomationsModalComp}
+  <AutomationsModalComp
+    bind:open={automationsOpen}
+    {models}
+    {defaultModel}
+    canInstallPWA={Boolean(deferredInstallPrompt)}
+    onInstallPWA={handleInstallPWA}
+    onOpenConversation={(convId, title) => {
+      paneRefs[focusedTabId]?.loadConversation(convId, title);
+    }}
+    onUnreadChange={(n) => {
+      unreadAlerts = n;
+    }}
+  />
+{/if}
 
 {#if pendingDelete}
   <div

@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 )
 
@@ -18,21 +19,21 @@ type AppDirs struct {
 
 // GatewaySettings mirrors Python GatewaySettings 1:1 for API and mod parity.
 type GatewaySettings struct {
-	Mode                string
-	Port                string
-	TargetHost          string
-	TargetUser          string
-	TargetSSHPort       string
-	WinTargetHost       string
-	WinTargetUser       string
-	WinSSHPort          string
-	WinAGYBin           string
-	WinInboxDir         string
-	WinOutboxDir        string
-	WolMAC              string
-	SSHKey              string
-	OllamaURL           string
-	TtydWSURL           string
+	Mode                   string
+	Port                   string
+	TargetHost             string
+	TargetUser             string
+	TargetSSHPort          string
+	WinTargetHost          string
+	WinTargetUser          string
+	WinSSHPort             string
+	WinAGYBin              string
+	WinInboxDir            string
+	WinOutboxDir           string
+	WolMAC                 string
+	SSHKey                 string
+	OllamaURL              string
+	TtydWSURL              string
 	WhisperURL             string
 	CockpitURL             string
 	CockpitToken           string
@@ -48,6 +49,8 @@ type GatewaySettings struct {
 	WhatsAppWebhookSecret  string
 	DiscordBotToken        string
 	DiscordAllowedUserIDs  []string
+	RetentionDays          int
+	BrainBackupMaxMB       int
 	Dirs                   AppDirs
 	Mods                   map[string]any
 }
@@ -72,6 +75,18 @@ func boolEnv(name string, fallback bool) bool {
 	}
 }
 
+func intEnv(name string, fallback int) int {
+	val, ok := os.LookupEnv(name)
+	if !ok || strings.TrimSpace(val) == "" {
+		return fallback
+	}
+	parsed, err := strconv.Atoi(strings.TrimSpace(val))
+	if err != nil || parsed < 0 {
+		return fallback
+	}
+	return parsed
+}
+
 func fileExists(path string) bool {
 	_, err := os.Stat(path)
 	return err == nil
@@ -87,7 +102,7 @@ func loadDotEnv(path string) {
 
 	scanner := bufio.NewScanner(f)
 	for scanner.Scan() {
-		line := strings.TrimSpace(scanner.Text())
+		line := strings.TrimSpace(strings.TrimPrefix(scanner.Text(), "\ufeff"))
 		if line == "" || strings.HasPrefix(line, "#") {
 			continue
 		}
@@ -155,10 +170,43 @@ func GetAppDirs() AppDirs {
 	}
 }
 
-// Load reads .env (local or parent) and returns normalized GatewaySettings.
+// DefaultConfigDir returns the OS-standard directory for persistent gateway configuration (.env).
+func DefaultConfigDir() string {
+	if fileExists("/.dockerenv") {
+		return "/data"
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		home = "."
+	}
+	switch runtime.GOOS {
+	case "windows":
+		localApp := envOr("LOCALAPPDATA", filepath.Join(home, "AppData", "Local"))
+		return filepath.Join(localApp, "agy-gateway")
+	case "darwin":
+		return filepath.Join(home, "Library", "Application Support", "agy-gateway")
+	default:
+		xdgConfig := envOr("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
+		return filepath.Join(xdgConfig, "agy-gateway")
+	}
+}
+
+// Load reads .env (local, parent, executable directory, config dir, or DataDir) and returns normalized GatewaySettings.
 func Load() GatewaySettings {
 	loadDotEnv(".env")
 	loadDotEnv("../.env")
+	if _, hasCustomDataDir := os.LookupEnv("DATA_DIR"); !hasCustomDataDir {
+		if exePath, err := os.Executable(); err == nil {
+			exeDir := filepath.Dir(exePath)
+			if !strings.Contains(strings.ToLower(exeDir), "go-build") {
+				loadDotEnv(filepath.Join(exeDir, ".env"))
+			}
+		}
+		loadDotEnv(filepath.Join(DefaultConfigDir(), ".env"))
+		loadDotEnv(filepath.Join(GetAppDirs().DataDir, ".env"))
+	} else {
+		loadDotEnv(filepath.Join(GetAppDirs().DataDir, ".env"))
+	}
 
 	inDocker := fileExists("/.dockerenv")
 	envMode := strings.ToLower(envOr("GATEWAY_MODE", ""))
@@ -189,21 +237,12 @@ func Load() GatewaySettings {
 	bridgeDir := envOr("IDE_BRIDGE_DIR", filepath.Join(dirs.DataDir, "agy-bridge"))
 	tlsCertFile := envOr("TLS_CERT_FILE", "")
 	tlsKeyFile := envOr("TLS_KEY_FILE", "")
-	bridgeTimeout := 180
-	if rawT := envOr("IDE_BRIDGE_TIMEOUT_SEC", ""); rawT != "" {
-		var parsedT int
-		for _, ch := range rawT {
-			if ch >= '0' && ch <= '9' {
-				parsedT = parsedT*10 + int(ch-'0')
-			} else {
-				parsedT = 0
-				break
-			}
-		}
-		if parsedT > 0 {
-			bridgeTimeout = parsedT
-		}
+	bridgeTimeout := intEnv("IDE_BRIDGE_TIMEOUT_SEC", 180)
+	if bridgeTimeout <= 0 {
+		bridgeTimeout = 180
 	}
+	retentionDays := intEnv("RETENTION_DAYS", 30)
+	brainBackupMaxMB := intEnv("BRAIN_BACKUP_MAX_MB", 512)
 
 	cockpitEnabled := boolEnv("ENABLE_COCKPIT", false) || cockpitURL != ""
 	if cockpitURL == "" {
@@ -280,6 +319,8 @@ func Load() GatewaySettings {
 		WhatsAppWebhookSecret:  envOr("WHATSAPP_WEBHOOK_SECRET", ""),
 		DiscordBotToken:        envOr("DISCORD_BOT_TOKEN", ""),
 		DiscordAllowedUserIDs:  splitCSV(envOr("DISCORD_ALLOWED_USER_IDS", "")),
+		RetentionDays:          retentionDays,
+		BrainBackupMaxMB:       brainBackupMaxMB,
 		Dirs:                   dirs,
 		Mods:                   mods,
 	}
